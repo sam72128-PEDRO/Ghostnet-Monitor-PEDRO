@@ -154,12 +154,25 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
       standalone and through the full IQ chain.
 - [x] Receive modes in the native receiver; the JS8 engine only runs in JS8
       mode; voice mode refuses IQ recording even if configured.
-- [ ] **2G ALE: blocked.** It needs MIL-STD-188-141 framing details (Golay
-      coding, interleave, tone mapping) from a reference implementation or
-      real recordings. Writing it from memory would pass my own synthetic
-      tests and still fail on air. The spec's candidate, PC-ALE (MIT), could
-      not be attached in this environment. It stays Coming Soon until the
-      reference is available.
+- [x] **2G ALE (v0.5).** Own implementation (`rx-core/src/ale.cpp`): 8-FSK
+      on the USB audio, 8 parallel symbol-timing phases, triple-redundancy
+      majority vote, Golay (24,12) correcting 3 errors per half, strict
+      acquisition (≤1 correction per half + a plausible address word) and
+      continuation sync. Protocol layer: TO/TIS/TWS/THRU/FROM addresses with
+      DATA/REP extension, soundings, calls, AMD text; other commands are
+      logged raw, never interpreted. Scanner: 10 GhostNet channels, 1 s
+      dwell (setting), stops on any word, resumes 4 s after the last; data
+      in flight in USB buffers when retuning is blanked, never attributed to
+      the new channel. Tests: every word decodes in AWGN down to −6 dB SNR
+      (3 kHz), threshold ~−7 dB; ±40 Hz mistuning; 0 false words in 10 min of
+      noise, carrier and sweep; full IQ-chain scan test with a simulated
+      dongle that retunes. Format cross-checked against LinuxALE (GPLv2,
+      reference only); PC-ALE rejected (see THIRD_PARTY.md).
+- [ ] **ALE on air (owner):** no real ALE signal has been decoded yet. The
+      B-codeword check-bit inversion and the AMD/command split come from
+      LinuxALE and my reading of the standard, not from a recording.
+      Retuning while streaming, including the switch out of direct sampling
+      for 28.1085 MHz, is unverified on hardware.
 
 ### WS6 — Hardware validation on the SM-T733 (owner)
 

@@ -8,6 +8,7 @@ enum class RxMode(val nativeId: Int, val label: String, val digital: Boolean, va
     RTTY(1, "RTTY", true, "RTTY"),
     VOICE_SSB(2, "Voice (SSB)", false, "VOICE_SSB"),
     VOICE_FM(3, "Voice (FM)", false, "VOICE_FM"),
+    ALE(4, "ALE (2G)", true, "ALE_2G"),
 }
 
 /** A frequency the receiver can tune, with the mode used there. */
@@ -18,11 +19,18 @@ data class Preset(
     val purpose: String,
     val mode: RxMode = RxMode.JS8,
     val usb: Boolean = true,
+    /** ALE: dial frequencies to scan (USB). Empty = listen on [dialHz] only. */
+    val aleChannels: List<Int> = emptyList(),
 ) {
     val isTest: Boolean get() = id.startsWith("test")
 }
 
 object Presets {
+    /** GhostNet V1.5 2G ALE list (booklet: working draft). Scan all, or sit on one channel.
+     * Declared before [ALL], which uses it during initialisation. */
+    val ALE_CHANNELS = listOf(3_598_500, 7_104_500, 7_106_500, 7_108_500, 10_128_500,
+        14_111_500, 14_113_500, 14_115_500, 18_108_500, 28_108_500)
+
     val ALL = listOf(
         // GhostNet V1.5 JS8 (USB)
         Preset("80m", "80 m · 3.575 MHz JS8", 3_575_000, "International bridges (NA-AUS, EUR-AUS)"),
@@ -49,7 +57,20 @@ object Presets {
         Preset("testwx1", "TEST · NOAA Weather 162.550 MHz", 162_550_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
         Preset("testwx2", "TEST · NOAA Weather 162.400 MHz", 162_400_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
         Preset("testwx3", "TEST · NOAA Weather 162.475 MHz", 162_475_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
-    )
+    ) + alePresets()
+
+    private fun alePresets(): List<Preset> =
+        listOf(Preset("alescan", "ALE · scan all 10 GhostNet channels", ALE_CHANNELS[0],
+            "Stops on activity, resumes after it ends", RxMode.ALE, aleChannels = ALE_CHANNELS)) +
+            ALE_CHANNELS.mapIndexed { i, hz ->
+                Preset("ale%02d".format(i + 1), "ALE · %.4f MHz (%02dGHOSTNET)".format(hz / 1e6, i + 1), hz,
+                    "Single ALE channel, no scanning", RxMode.ALE)
+            } + listOf(
+                // Not GhostNet: amateur HFN/HFLink ALE channels, where stations
+                // sound around the clock. For checking ALE reception any time.
+                Preset("testale20", "TEST · amateur ALE 14.109 MHz", 14_109_000, "Receiver check only, not GhostNet", RxMode.ALE),
+                Preset("testale40", "TEST · amateur ALE 7.102 MHz", 7_102_000, "Receiver check only, not GhostNet", RxMode.ALE),
+            )
 
     /** Kept for callers that only deal with JS8. */
     val JS8: List<Preset> get() = ALL.filter { it.mode == RxMode.JS8 }
@@ -84,6 +105,8 @@ data class ReceiveSettings(
     val captureOffsetHz: Int = 25_000,
     /** js8core SubmodeId bits: Normal, Fast, Turbo, Slow. */
     val submodeMask: Int = 0b01111,
+    /** ALE scan dwell per channel. */
+    val aleDwellMs: Int = 1000,
 ) {
     val mode: RxMode get() = preset.mode
 
@@ -96,6 +119,8 @@ data class ReceiveSettings(
         append(", RTL AGC ").append(if (rtlAgc) "on" else "off")
         if (invertSpectrum) append(", spectrum inverted")
         if (mode == RxMode.RTTY) append(", RTTY shift ").append(rttyShiftHz).append(" Hz").append(if (rttyReverse) " reversed" else "")
+        if (mode == RxMode.ALE && preset.aleChannels.size > 1) append(", scanning ").append(preset.aleChannels.size)
+            .append(" channels, dwell ").append(aleDwellMs).append(" ms (no IQ recording while scanning)")
         if (mode == RxMode.VOICE_FM) append(", squelch ").append(if (fmSquelch) "on" else "off")
         if (recordIq && mode.digital) append(", recording IQ (max ").append(recordMaxMinutes).append(" min)")
         if (verboseLog) append(", verbose decoder log")
@@ -118,6 +143,7 @@ data class ReceiveSettings(
                 rttyShiftHz = p.getInt("rtty_shift", 170),
                 fmSquelch = p.getBoolean("fm_squelch", true),
                 volume = p.getFloat("volume", 0.8f),
+                aleDwellMs = p.getInt("ale_dwell_ms", 1000),
             )
         }
 
@@ -134,6 +160,7 @@ data class ReceiveSettings(
                 .putInt("rtty_shift", s.rttyShiftHz)
                 .putBoolean("fm_squelch", s.fmSquelch)
                 .putFloat("volume", s.volume)
+                .putInt("ale_dwell_ms", s.aleDwellMs)
                 .apply()
         }
     }

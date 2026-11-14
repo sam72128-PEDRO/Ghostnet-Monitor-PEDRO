@@ -67,11 +67,14 @@ class GhostNetPlanTest {
     @Test
     fun receivableModesMatchTheBuildAndEveryModeStaysOnTheSchedule() {
         val receivable = GhostNetPlan.Mode.values().filter { it.receivableInThisBuild }.toSet()
-        assertEquals(setOf(GhostNetPlan.Mode.JS8, GhostNetPlan.Mode.RTTY, GhostNetPlan.Mode.LSB_VOICE, GhostNetPlan.Mode.FM_ANALOG), receivable)
+        assertEquals(setOf(GhostNetPlan.Mode.JS8, GhostNetPlan.Mode.RTTY, GhostNetPlan.Mode.LSB_VOICE,
+            GhostNetPlan.Mode.FM_ANALOG, GhostNetPlan.Mode.ALE_2G), receivable)
         assertTrue(GhostNetPlan.EVENTS.any { it.mode == GhostNetPlan.Mode.VARA_WINLINK && !it.receivableInThisBuild })
-        assertTrue(GhostNetPlan.EVENTS.any { it.mode == GhostNetPlan.Mode.ALE_2G && !it.receivableInThisBuild })
-        // Every receivable scheduled window maps to a preset the app can tune.
-        for (e in GhostNetPlan.EVENTS.filter { it.receivableInThisBuild }) {
+        // ALE windows use the whole channel list: the scan preset covers exactly the catalog's ALE set.
+        assertEquals(GhostNetPlan.ALE_CHANNEL_SET.map { it.hz.toInt() }, Presets.byId("alescan").aleChannels)
+        assertEquals(RxMode.ALE, Presets.byId("alescan").mode)
+        // Every receivable single-frequency window maps to a preset the app can tune.
+        for (e in GhostNetPlan.EVENTS.filter { it.receivableInThisBuild && it.frequencyId != null }) {
             val hz = GhostNetPlan.frequency(e.frequencyId!!).hz
             assertNotNull("no preset for ${e.id}", Presets.forDial(hz))
         }
@@ -128,9 +131,9 @@ class GhostNetPlanTest {
     fun activeAndNextAreFoundAroundAWindow() {
         val during = Instant.parse("2027-01-16T12:30:00Z") // Sat, NA-AUS 20 m bridge
         assertEquals(listOf("na_aus_20m"), engine.active(during).map { it.event.id })
-        val next = engine.next(during, receivableOnly = true)!!
-        assertEquals("na_aus_80m", next.event.id) // skips the ALE window
         val nextAny = engine.next(during)!!
         assertEquals("na_aus_ale", nextAny.event.id)
+        // ALE is receivable now, so it is also the next receivable window.
+        assertEquals("na_aus_ale", engine.next(during, receivableOnly = true)!!.event.id)
     }
 }

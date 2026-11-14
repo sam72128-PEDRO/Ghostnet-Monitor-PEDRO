@@ -227,6 +227,7 @@ class MonitorService : Service() {
                     when (it.mode) {
                         RxMode.JS8 -> "${it.preset.label} · ${s.frames} frames, ${s.messages} messages"
                         RxMode.RTTY -> "${it.preset.label} · ${s.messages} lines"
+                        RxMode.ALE -> "${it.preset.label} · ${s.aleTransmissions} calls/soundings, ${s.aleWords} words"
                         else -> "${it.preset.label} · listening (audio is not recorded)"
                     },
                 )
@@ -297,6 +298,29 @@ class MonitorService : Service() {
             sessionId?.let { id -> dbWriter.execute { runCatching { db.addMessage(id, m) }.onFailure { DiagLog.e(TAG, "RTTY line write failed", it) } } }
             MonitorState.addMessage(m)
             DiagLog.d(TAG, "RTTY line: $characters chars, $framingErrors framing errors, centre %.0f Hz".format(centerHz))
+        }
+
+        // ALE is stored in the same tables as JS8: each word is a frame and
+        // each transmission a message. offset_hz holds the channel's dial
+        // frequency (scanning changes it), flags the Golay correction count.
+        override fun onAleWord(timeMs: Long, channelHz: Int, preamble: String, chars: String, raw: Int, errors: Int, badVotes: Int) {
+            val f = FrameRecord(timeMs, System.currentTimeMillis(), 0, channelHz.toDouble(), 0, 0f, errors, preamble,
+                "%06X v%d/48".format(raw and 0xFFFFFF, 48 - badVotes), "$preamble $chars", "", "")
+            sessionId?.let { id -> dbWriter.execute { runCatching { db.addFrame(id, f) }.onFailure { DiagLog.e(TAG, "ALE word write failed", it) } } }
+            MonitorState.addFrame(f)
+            DiagLog.d(TAG, "ALE %.4f MHz %s %s (errors %d, votes %d/48)".format(channelHz / 1e6, preamble, chars, errors, 48 - badVotes))
+        }
+
+        override fun onAleTransmission(
+            startMs: Long, endMs: Long, channelHz: Int, kind: String, summary: String, from: String, to: String,
+            amd: String, words: Int, maxErrors: Int,
+        ) {
+            val complete = kind == "call" || kind == "sounding"
+            val m = MessageRecord(startMs, endMs, 0, channelHz.toDouble(), 0, 0, words, complete,
+                !complete, false, false, summary, from, to, "", kind)
+            sessionId?.let { id -> dbWriter.execute { runCatching { db.addMessage(id, m) }.onFailure { DiagLog.e(TAG, "ALE write failed", it) } } }
+            MonitorState.addMessage(m)
+            DiagLog.i(TAG, "ALE %.4f MHz %s: %s (%d words, max %d corrections)".format(channelHz / 1e6, kind, summary, words, maxErrors))
         }
     }
 

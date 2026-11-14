@@ -123,6 +123,8 @@ struct Session {
   jmethodID on_audio = nullptr;
   jmethodID on_rtty_char = nullptr;
   jmethodID on_rtty_line = nullptr;
+  jmethodID on_ale_word = nullptr;
+  jmethodID on_ale_transmission = nullptr;
   std::string description;
 };
 
@@ -202,7 +204,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     JNIEnv* env, jclass, jlong handle, jint dial_hz, jint sample_rate_hz, jint capture_offset_hz, jboolean usb,
     jboolean invert_spectrum, jint ppm, jboolean rtl_agc, jint direct_sampling, jint submode_mask, jstring record_path, jlong record_max_bytes,
     jboolean verbose_log, jint mode, jdouble rtty_center_hz, jdouble rtty_shift_hz, jboolean rtty_reverse,
-    jboolean fm_squelch, jobject listener) {
+    jboolean fm_squelch, jintArray ale_channels, jint ale_dwell_ms, jobject listener) {
   Session* s = session(handle);
   std::lock_guard<std::mutex> lock(s->mutex);
   if (!s->source) return jstr(env, "no receiver open");
@@ -221,12 +223,21 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     case 1: cfg.mode = ReceiveMode::kRtty; break;
     case 2: cfg.mode = ReceiveMode::kVoiceSsb; break;
     case 3: cfg.mode = ReceiveMode::kVoiceFm; break;
+    case 4: cfg.mode = ReceiveMode::kAle; break;
     default: cfg.mode = ReceiveMode::kJs8; break;
   }
   cfg.rtty.center_hz = rtty_center_hz;
   cfg.rtty.shift_hz = rtty_shift_hz;
   cfg.rtty.reverse = rtty_reverse;
   cfg.fm_squelch = fm_squelch;
+  if (ale_channels) {
+    const jsize n = env->GetArrayLength(ale_channels);
+    std::vector<jint> ch(static_cast<std::size_t>(n));
+    if (n > 0) env->GetIntArrayRegion(ale_channels, 0, n, ch.data());
+    for (jint c : ch) cfg.ale.channels_hz.push_back(static_cast<std::uint32_t>(c));
+    if (!cfg.ale.channels_hz.empty()) cfg.dial_hz = cfg.ale.channels_hz.front();  // tune the first channel
+  }
+  cfg.ale.dwell_ms = ale_dwell_ms > 0 ? ale_dwell_ms : 1000;
   if (record_path) {
     const char* p = env->GetStringUTFChars(record_path, nullptr);
     cfg.record_path = p ? p : "";
@@ -260,9 +271,13 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
   s->on_audio = env->GetMethodID(cls, "onAudio", "([S)V");
   s->on_rtty_char = env->GetMethodID(cls, "onRttyChar", "(Ljava/lang/String;Z)V");
   s->on_rtty_line = env->GetMethodID(cls, "onRttyLine", "(JJLjava/lang/String;IID)V");
+  s->on_ale_word = env->GetMethodID(cls, "onAleWord", "(JILjava/lang/String;Ljava/lang/String;III)V");
+  s->on_ale_transmission = env->GetMethodID(
+      cls, "onAleTransmission",
+      "(JJILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V");
   env->DeleteLocalRef(cls);
   if (!s->on_frame || !s->on_message || !s->on_source_error || !s->on_spectrum || !s->on_audio || !s->on_rtty_char ||
-      !s->on_rtty_line) {
+      !s->on_rtty_line || !s->on_ale_word || !s->on_ale_transmission) {
     env->ExceptionClear();
     release_listener(env, s);
     return jstr(env, "listener is missing a callback method");
@@ -341,6 +356,36 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
                       static_cast<jdouble>(l.center_hz));
     clear_exception(e, "onRttyLine");
     e->DeleteLocalRef(t);
+  };
+  cb.on_ale_word = [s](const ghostnet::rx::ale::Word& w) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    jstring pre = jstr(e, ghostnet::rx::ale::preamble_name(w.preamble));
+    // Characters outside printable ASCII are shown as '.', raw bits are kept separately.
+    std::string chars;
+    for (int i = 0; i < 3; ++i) chars.push_back((w.chars[i] >= 0x20 && w.chars[i] < 0x7F) ? w.chars[i] : '.');
+    jstring ch = jstr(e, chars);
+    e->CallVoidMethod(s->listener, s->on_ale_word, static_cast<jlong>(w.time_ms), static_cast<jint>(w.channel_hz), pre,
+                      ch, static_cast<jint>(w.raw), static_cast<jint>(w.errors), static_cast<jint>(w.bad_votes));
+    clear_exception(e, "onAleWord");
+    e->DeleteLocalRef(pre);
+    e->DeleteLocalRef(ch);
+  };
+  cb.on_ale_transmission = [s](const ghostnet::rx::ale::Transmission& t) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    std::string to;
+    for (const auto& a : t.to) to += (to.empty() ? "" : ",") + a;
+    jstring kind = jstr(e, ghostnet::rx::ale::Transmission::kind_name(t.kind));
+    jstring summary = jstr(e, t.summary());
+    jstring from = jstr(e, t.from);
+    jstring tos = jstr(e, to);
+    jstring amd = jstr(e, t.amd);
+    e->CallVoidMethod(s->listener, s->on_ale_transmission, static_cast<jlong>(t.start_ms), static_cast<jlong>(t.end_ms),
+                      static_cast<jint>(t.channel_hz), kind, summary, from, tos, amd, static_cast<jint>(t.words),
+                      static_cast<jint>(t.max_errors));
+    clear_exception(e, "onAleTransmission");
+    for (jstring j : {kind, summary, from, tos, amd}) e->DeleteLocalRef(j);
   };
   cb.on_source_error = [s](const std::string& message) {
     native_log("source", message);
@@ -421,7 +466,17 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_org_ghostnet_monitor_NativeReceiv
                                  st.rtty_center_hz,
                                  st.rtty_quality,
                                  static_cast<double>(st.rtty_characters),
-                                 static_cast<double>(st.rtty_framing_errors)};
+                                 static_cast<double>(st.rtty_framing_errors),
+                                 static_cast<double>(st.ale_channel_hz),
+                                 st.ale_scanning ? 1.0 : 0.0,
+                                 st.ale_holding ? 1.0 : 0.0,
+                                 st.ale_sync ? 1.0 : 0.0,
+                                 st.ale_quality,
+                                 static_cast<double>(st.ale_words),
+                                 static_cast<double>(st.ale_transmissions),
+                                 static_cast<double>(st.retunes),
+                                 static_cast<double>(st.retune_failures),
+                                 static_cast<double>(st.ale_channel_index)};
   jdoubleArray out = env->NewDoubleArray(static_cast<jsize>(v.size()));
   env->SetDoubleArrayRegion(out, 0, static_cast<jsize>(v.size()), v.data());
   return out;

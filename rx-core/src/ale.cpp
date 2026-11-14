@@ -66,7 +66,12 @@ int ungray(int v) {
   return 0;
 }
 
+// Addresses for display: non-printable characters (possible in words that
+// arrive on an established sync) shown as '.', trailing '@' fill removed.
 std::string strip_fill(std::string s) {
+  for (auto& c : s) {
+    if (c < 0x20 || c > 0x7E) c = '.';
+  }
   while (s.size() > 1 && s.back() == '@') s.pop_back();
   return s;
 }

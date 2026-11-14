@@ -255,7 +255,7 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
 
 /** Version string recorded with each session (kept in code so it needs no generated BuildConfig). */
 object BuildConfigInfo {
-    const val VERSION = "0.4"
+    const val VERSION = "0.5"
 }
 
 data class SessionSummary(

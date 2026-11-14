@@ -15,6 +15,13 @@ remotes, and record the exact commit pinned at that time.
 | `third_party/Eigen` | https://gitlab.com/libeigen/eigen | MPL2 | Header-only linear algebra used by js8core | Header-only; kept as plain vendored snapshot even if other deps move to submodules. |
 | `third_party/CRCpp` | https://github.com/d-bahr/CRCpp | MIT | CRC implementation used by js8core | Header-only, small, fine as a plain vendored snapshot. |
 
+## References consulted (no code included)
+
+| Project | Licence | How it was used |
+|---|---|---|
+| LinuxALE 0.0.x (Charles Brain, Ilkka Toivanen, 2001; sourceforge.net/projects/linuxale) | GPLv2 | Cross-check of the 2G ALE on-air format: tone plan and Gray mapping, Golay (24,12) generator, A/B interleave with inverted B check bits, stuff bit, triple redundancy. `rx-core/src/ale.cpp` is an independent implementation; the Golay table is generated from the generator polynomial, and the tests compare a few values against the published table. No LinuxALE code is included. |
+| PC-ALE (github.com/alex-pennington/pc-ale @ 913edbd) | MIT | Evaluated and **rejected** as a reference: its Golay encode table holds 96 of 4096 entries (the rest are zero), it has no bit interleaving, and its tone plan (125 Hz spacing) does not match MIL-STD-188-141 (250 Hz). |
+
 ## Local modifications
 
 Only one vendored file set is modified. Keep this list current; it's what

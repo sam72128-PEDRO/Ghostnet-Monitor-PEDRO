@@ -105,8 +105,20 @@ fun SettingsScreen(controller: AppController) {
                 style = MaterialTheme.typography.bodySmall)
         }
 
+        SectionCard("ALE scanning") {
+            Text("Dwell per channel", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (ms in listOf(1000, 2000, 5000)) {
+                    FilterChip(selected = s.aleDwellMs == ms, enabled = idle,
+                        onClick = { update(s.copy(aleDwellMs = ms)) }, label = { Text("${ms / 1000} s") })
+                }
+            }
+            Text("The scan stops on any decoded ALE word and resumes 4 s after the channel goes quiet. 1 s catches every call that lasts at least one pass through the list; longer dwells suit slow calling stations.",
+                style = MaterialTheme.typography.bodySmall)
+        }
+
         SectionCard("IQ recording") {
-            Toggle("Record raw IQ during digital sessions", "JS8 and RTTY only (voice is never recorded). Saves exactly what the receiver delivered, about 29 MB per minute, so problems can be replayed and debugged offline.",
+            Toggle("Record raw IQ during digital sessions", "JS8, RTTY and single-channel ALE (voice is never recorded; ALE scanning isn't, since a recording holds one frequency). Saves exactly what the receiver delivered, about 29 MB per minute, so problems can be replayed and debugged offline.",
                 s.recordIq, idle) { update(s.copy(recordIq = it)) }
             Text("Stop recording after", style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
