@@ -171,14 +171,97 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
             if (it.moveToFirst()) it.getString(0) else null
         }
 
+    fun listSessions(limit: Int = 200): List<SessionSummary> =
+        readableDatabase.rawQuery(
+            """SELECT session_id, start_utc_ms, end_utc_ms, state, end_reason, dial_hz, receiver_id,
+                      frame_count, message_count, settings, clock_note, capture_notes
+               FROM sessions ORDER BY start_utc_ms DESC LIMIT $limit""",
+            null,
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(
+                    SessionSummary(
+                        id = c.getString(0), startUtcMs = c.getLong(1), endUtcMs = if (c.isNull(2)) null else c.getLong(2),
+                        state = c.getString(3), endReason = c.getString(4), dialHz = c.getLong(5),
+                        receiverId = c.getString(6) ?: "", frames = c.getInt(7), messages = c.getInt(8),
+                        settings = c.getString(9) ?: "", clockNote = c.getString(10), notes = c.getString(11),
+                    ),
+                )
+            }
+        }
+
+    fun messagesFor(sessionId: String): List<MessageRecord> =
+        readableDatabase.rawQuery(
+            """SELECT first_utc_ms, last_utc_ms, submode, offset_hz, snr_min_db, snr_max_db, frame_count, complete,
+                      missing_start, has_gap, timed_out, text, from_call, to_call, grid, raw_frames
+               FROM messages WHERE session_id = ? ORDER BY first_utc_ms, id""",
+            arrayOf(sessionId),
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(
+                    MessageRecord(
+                        c.getLong(0), c.getLong(1), c.getInt(2), c.getDouble(3), c.getInt(4), c.getInt(5), c.getInt(6),
+                        c.getInt(7) != 0, c.getInt(8) != 0, c.getInt(9) != 0, c.getInt(10) != 0,
+                        c.getString(11) ?: "", c.getString(12) ?: "", c.getString(13) ?: "", c.getString(14) ?: "",
+                        c.getString(15) ?: "",
+                    ),
+                )
+            }
+        }
+
+    fun framesFor(sessionId: String): List<FrameRecord> =
+        readableDatabase.rawQuery(
+            """SELECT slot_utc_ms, received_utc_ms, submode, offset_hz, snr_db, dt_s, flags, kind, raw, text,
+                      from_call, to_call FROM frames WHERE session_id = ? ORDER BY slot_utc_ms, id""",
+            arrayOf(sessionId),
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(
+                    FrameRecord(
+                        c.getLong(0), c.getLong(1), c.getInt(2), c.getDouble(3), c.getInt(4), c.getFloat(5), c.getInt(6),
+                        c.getString(7) ?: "", c.getString(8) ?: "", c.getString(9) ?: "", c.getString(10) ?: "",
+                        c.getString(11) ?: "",
+                    ),
+                )
+            }
+        }
+
+    /** Retention: removes finished sessions (and their frames/messages) that ended before [cutoffMs]. */
+    fun deleteSessionsEndedBefore(cutoffMs: Long): Int {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // Android binds arguments as text, and COALESCE() strips the column's
+            // integer affinity, so without the CAST every number compares less than
+            // the text cutoff and *every* finished session would match.
+            val doomed = "state != 'Active' AND COALESCE(end_utc_ms, start_utc_ms) < CAST(? AS INTEGER)"
+            val args = arrayOf(cutoffMs.toString())
+            val n = db.rawQuery("SELECT COUNT(*) FROM sessions WHERE $doomed", args).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+            val inDoomed = "session_id IN (SELECT session_id FROM sessions WHERE $doomed)"
+            db.delete("frames", inDoomed, args)
+            db.delete("messages", inDoomed, args)
+            db.delete("sessions", doomed, args)
+            db.setTransactionSuccessful()
+            return n
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun sessionCount(): Int =
         readableDatabase.rawQuery("SELECT COUNT(*) FROM sessions", null).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 }
 
 /** Version string recorded with each session (kept in code so it needs no generated BuildConfig). */
 object BuildConfigInfo {
-    const val VERSION = "0.2-m1"
+    const val VERSION = "0.3-m1"
 }
+
+data class SessionSummary(
+    val id: String, val startUtcMs: Long, val endUtcMs: Long?, val state: String, val endReason: String?,
+    val dialHz: Long, val receiverId: String, val frames: Int, val messages: Int, val settings: String,
+    val clockNote: String?, val notes: String?,
+)
 
 data class FrameRecord(
     val slotUtcMs: Long, val receivedUtcMs: Long, val submode: Int, val offsetHz: Double, val snrDb: Int,

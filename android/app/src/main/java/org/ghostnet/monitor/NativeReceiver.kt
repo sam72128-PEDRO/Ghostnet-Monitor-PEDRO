@@ -19,6 +19,9 @@ interface NativeListener {
     )
 
     fun onSourceError(message: String)
+
+    /** Waterfall row: dB per bin from 0 Hz above the dial, [binHz] wide each. About 12 rows/s. */
+    fun onSpectrum(bins: FloatArray, binHz: Float)
 }
 
 /**
@@ -33,11 +36,12 @@ class NativeReceiver : AutoCloseable {
     fun openFd(fd: Int): String? = nativeOpenFd(handle, fd)
 
     /** Returns an error message, or null once samples are flowing into the decoder. */
-    fun start(settings: ReceiveSettings, listener: NativeListener): String? = nativeStart(
-        handle, settings.preset.dialHz, settings.sampleRateHz, settings.captureOffsetHz, true,
-        settings.invertSpectrum, settings.ppm, settings.rtlAgc, settings.directSampling,
-        settings.submodeMask, listener,
-    )
+    fun start(settings: ReceiveSettings, recordPath: String?, recordMaxBytes: Long, listener: NativeListener): String? =
+        nativeStart(
+            handle, settings.preset.dialHz, settings.sampleRateHz, settings.captureOffsetHz, true,
+            settings.invertSpectrum, settings.ppm, settings.rtlAgc, settings.directSampling,
+            settings.submodeMask, recordPath, recordMaxBytes, settings.verboseLog, listener,
+        )
 
     /** Blocks until stopped; half-received messages arrive via onMessage before it returns. */
     fun stop() = nativeStop(handle)
@@ -70,6 +74,8 @@ class NativeReceiver : AutoCloseable {
         val lastFrameUnixMs: Long,
         val spectrumPowerDb: Double,
         val spectrumPeakDb: Double,
+        val recording: Boolean,
+        val recordedBytes: Long,
     ) {
         companion object {
             // Layout must match nativeStats() in ghostnet_jni.cpp.
@@ -90,6 +96,8 @@ class NativeReceiver : AutoCloseable {
                 lastFrameUnixMs = a[13].toLong(),
                 spectrumPowerDb = a[14],
                 spectrumPeakDb = a[15],
+                recording = a[16] != 0.0,
+                recordedBytes = a[17].toLong(),
             )
         }
     }
@@ -131,17 +139,24 @@ class NativeReceiver : AutoCloseable {
          */
         fun runSelfTest(speed: Double = 10.0): SelfTestResult = SelfTestResult.fromArray(nativeSelfTest(speed))
 
+        /**
+         * Lines logged natively since the last call ("unixMs|source|text"),
+         * including librtlsdr/libusb stderr output, which Android otherwise discards.
+         */
+        fun drainLog(): Array<String> = nativeDrainLog()
+
         @JvmStatic private external fun nativeCreate(): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
         @JvmStatic private external fun nativeOpenFd(handle: Long, fd: Int): String?
         @JvmStatic private external fun nativeStart(
             handle: Long, dialHz: Int, sampleRateHz: Int, captureOffsetHz: Int, usb: Boolean,
             invertSpectrum: Boolean, ppm: Int, rtlAgc: Boolean, directSampling: Int, submodeMask: Int,
-            listener: NativeListener,
+            recordPath: String?, recordMaxBytes: Long, verboseLog: Boolean, listener: NativeListener,
         ): String?
         @JvmStatic private external fun nativeStop(handle: Long)
         @JvmStatic private external fun nativeDescribe(handle: Long): String
         @JvmStatic private external fun nativeStats(handle: Long): DoubleArray
         @JvmStatic private external fun nativeSelfTest(speed: Double): Array<String>
+        @JvmStatic private external fun nativeDrainLog(): Array<String>
     }
 }

@@ -17,11 +17,18 @@ to keep up with 240 kS/s.
 
 | File | Role |
 |---|---|
-| `MainActivity.kt` | Presets, start/stop, Device/Signal/Decoder/Clock status, message and frame lists, self-test, export |
-| `MonitorService.kt` | Foreground service: USB connection, native receiver, wake lock, session lifecycle, DB writes |
-| `NativeReceiver.kt` | JNI surface (open fd, start, stop, stats, self-test). No transmit methods. |
-| `SessionDatabase.kt` | sessions / frames / messages tables, crash recovery |
-| `SessionExporter.kt` | JSON export through the Storage Access Framework |
-| `src/main/cpp/ghostnet_jni.cpp` | JNI bridge into rx-core |
+| `MainActivity.kt` | Compose host; USB permission and start/stop |
+| `ui/` | The four tabs (Receive, Schedule, Export, Settings), waterfall, status logic |
+| `MonitorService.kt` | Foreground service: USB connection, native receiver, wake lock, session lifecycle, recording, DB writes, diagnostics events |
+| `NativeReceiver.kt` | JNI surface (open fd, start, stop, stats, spectrum, self-test, native log). No transmit methods. |
+| `GhostNetPlan.kt`, `ScheduleEngine.kt` | GhostNet V1.5 frequency catalog and UTC schedule with local-time conversion |
+| `SessionDatabase.kt`, `SessionExporter.kt` | sessions / frames / messages, retention, JSON / CSV / TXT export |
+| `DiagLog.kt`, `DiagnosticsExporter.kt`, `GhostNetApp.kt` | Diagnostics log, crash and exit-reason capture, diagnostics report |
+| `Recordings.kt`, `Waterfall.kt` | Raw IQ recordings; waterfall image buffer |
+| `src/main/cpp/ghostnet_jni.cpp` | JNI bridge into rx-core; captures librtlsdr stderr |
+
+Tests (`./gradlew :app:testDebugUnitTest`): schedule and frequency
+acceptance checks, Robolectric UI smoke tests of all four tabs, and
+storage / export / retention / diagnostics tests.
 
 How to test with real hardware: [`../TESTING.md`](../TESTING.md).

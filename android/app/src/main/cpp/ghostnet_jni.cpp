@@ -6,10 +6,15 @@
 
 #include <android/log.h>
 #include <jni.h>
+#include <unistd.h>
 
+#include <chrono>
+#include <cstdio>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "ghostnet/rx/receiver.hpp"
@@ -22,6 +27,48 @@ namespace {
 
 constexpr char kTag[] = "GhostNetNative";
 JavaVM* g_vm = nullptr;
+
+// ---- native diagnostics log ------------------------------------------------
+// Lines from librtlsdr/libusb (which report through stderr, discarded by
+// Android unless captured), the receive pipeline and this bridge. The app
+// drains them into its diagnostics log file.
+std::mutex g_log_mutex;
+std::deque<std::string> g_log;
+constexpr std::size_t kMaxLogLines = 4000;
+
+void native_log(const char* source, const std::string& text) {
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  __android_log_print(ANDROID_LOG_INFO, kTag, "[%s] %s", source, text.c_str());
+  std::lock_guard<std::mutex> lock(g_log_mutex);
+  g_log.push_back(std::to_string(ms) + "|" + source + "|" + text);
+  while (g_log.size() > kMaxLogLines) g_log.pop_front();
+}
+
+void capture_stderr() {
+  int fds[2];
+  if (pipe(fds) != 0) return;
+  setvbuf(stderr, nullptr, _IONBF, 0);
+  if (dup2(fds[1], STDERR_FILENO) < 0) return;
+  close(fds[1]);
+  std::thread([fd = fds[0]] {
+    std::string line;
+    char buf[512];
+    for (;;) {
+      const ssize_t n = read(fd, buf, sizeof(buf));
+      if (n <= 0) break;
+      for (ssize_t i = 0; i < n; ++i) {
+        if (buf[i] == '\n' || line.size() > 1000) {
+          if (!line.empty()) native_log("driver", line);
+          line.clear();
+        } else if (buf[i] != '\r') {
+          line.push_back(buf[i]);
+        }
+      }
+    }
+  }).detach();
+}
 
 // Native threads created by js8core/librtlsdr call back into Java. Each is
 // attached on first use and detached automatically when the thread exits
@@ -72,6 +119,7 @@ struct Session {
   jmethodID on_frame = nullptr;
   jmethodID on_message = nullptr;
   jmethodID on_source_error = nullptr;
+  jmethodID on_spectrum = nullptr;
   std::string description;
 };
 
@@ -88,7 +136,27 @@ void release_listener(JNIEnv* env, Session* s) {
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
   g_vm = vm;
+  capture_stderr();
+  native_log("bridge", "native library loaded");
   return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL Java_org_ghostnet_monitor_NativeReceiver_nativeDrainLog(JNIEnv* env,
+                                                                                                 jclass) {
+  std::deque<std::string> lines;
+  {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    lines.swap(g_log);
+  }
+  jclass string_class = env->FindClass("java/lang/String");
+  jobjectArray out = env->NewObjectArray(static_cast<jsize>(lines.size()), string_class, nullptr);
+  jsize i = 0;
+  for (const auto& l : lines) {
+    jstring j = jstr(env, l);
+    env->SetObjectArrayElement(out, i++, j);
+    env->DeleteLocalRef(j);
+  }
+  return out;
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_org_ghostnet_monitor_NativeReceiver_nativeCreate(JNIEnv*, jclass) {
@@ -117,16 +185,20 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
   if (s->receiver) return jstr(env, "already receiving");
   std::string error;
   s->source = RtlSdrSource::open_fd(fd, &error);
-  if (!s->source) return jstr(env, error);
+  if (!s->source) {
+    native_log("bridge", "open from fd " + std::to_string(fd) + " failed: " + error);
+    return jstr(env, error);
+  }
   s->description = s->source->description();
-  __android_log_print(ANDROID_LOG_INFO, kTag, "opened %s", s->description.c_str());
+  native_log("bridge", "opened " + s->description);
   return nullptr;
 }
 
 // Returns null on success, or an error message.
 extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_nativeStart(
     JNIEnv* env, jclass, jlong handle, jint dial_hz, jint sample_rate_hz, jint capture_offset_hz, jboolean usb,
-    jboolean invert_spectrum, jint ppm, jboolean rtl_agc, jint direct_sampling, jint submode_mask, jobject listener) {
+    jboolean invert_spectrum, jint ppm, jboolean rtl_agc, jint direct_sampling, jint submode_mask, jstring record_path, jlong record_max_bytes,
+    jboolean verbose_log, jobject listener) {
   Session* s = session(handle);
   std::lock_guard<std::mutex> lock(s->mutex);
   if (!s->source) return jstr(env, "no receiver open");
@@ -139,6 +211,13 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
   cfg.sideband = usb ? ghostnet::rf::Sideband::kUsb : ghostnet::rf::Sideband::kLsb;
   cfg.invert_spectrum = invert_spectrum;
   cfg.submode_mask = submode_mask;
+  cfg.verbose_engine_log = verbose_log;
+  if (record_path) {
+    const char* p = env->GetStringUTFChars(record_path, nullptr);
+    cfg.record_path = p ? p : "";
+    if (p) env->ReleaseStringUTFChars(record_path, p);
+  }
+  cfg.record_max_bytes = static_cast<std::uint64_t>(record_max_bytes);
 
   RtlSdrSettings rtl;
   rtl.center_hz = capture_center_hz(cfg);
@@ -147,7 +226,10 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
   rtl.rtl_agc = rtl_agc;
   rtl.direct_sampling = direct_sampling;
   std::string error;
-  if (!s->source->configure(rtl, &error)) return jstr(env, "configure failed: " + error);
+  if (!s->source->configure(rtl, &error)) {
+    native_log("bridge", "configure failed: " + error);
+    return jstr(env, "configure failed: " + error);
+  }
 
   release_listener(env, s);
   s->listener = env->NewGlobalRef(listener);
@@ -159,8 +241,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
       cls, "onMessage",
       "(JJIDIIIZZZZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
   s->on_source_error = env->GetMethodID(cls, "onSourceError", "(Ljava/lang/String;)V");
+  s->on_spectrum = env->GetMethodID(cls, "onSpectrum", "([FF)V");
   env->DeleteLocalRef(cls);
-  if (!s->on_frame || !s->on_message || !s->on_source_error) {
+  if (!s->on_frame || !s->on_message || !s->on_source_error || !s->on_spectrum) {
     env->ExceptionClear();
     release_listener(env, s);
     return jstr(env, "listener is missing a callback method");
@@ -204,7 +287,17 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     clear_exception(e, "onMessage");
     for (jstring j : {text, from, to, grid, raws}) e->DeleteLocalRef(j);
   };
+  cb.on_spectrum = [s](const std::vector<float>& bins, float bin_hz) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    jfloatArray arr = e->NewFloatArray(static_cast<jsize>(bins.size()));
+    e->SetFloatArrayRegion(arr, 0, static_cast<jsize>(bins.size()), bins.data());
+    e->CallVoidMethod(s->listener, s->on_spectrum, arr, static_cast<jfloat>(bin_hz));
+    clear_exception(e, "onSpectrum");
+    e->DeleteLocalRef(arr);
+  };
   cb.on_source_error = [s](const std::string& message) {
+    native_log("source", message);
     JNIEnv* e = env_for_this_thread();
     if (!e || !s->listener) return;
     jstring msg = jstr(e, message);
@@ -212,18 +305,19 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     clear_exception(e, "onSourceError");
     e->DeleteLocalRef(msg);
   };
-  cb.on_log = [](const std::string& line) { __android_log_print(ANDROID_LOG_INFO, kTag, "%s", line.c_str()); };
+  cb.on_log = [](const std::string& line) { native_log("rx", line); };
 
   s->receiver = std::make_unique<Receiver>(cfg, cb);
   if (!s->receiver->start(s->source.get())) {
     s->receiver.reset();
     release_listener(env, s);
+    native_log("bridge", "receiver failed to start");
     return jstr(env, "receiver failed to start");
   }
   s->description = s->source->description() + ", centre " + std::to_string(s->source->actual_center_hz()) +
                    " Hz, " + std::to_string(s->source->actual_sample_rate_hz()) + " S/s, direct sampling " +
                    std::to_string(s->source->direct_sampling_mode());
-  __android_log_print(ANDROID_LOG_INFO, kTag, "receiving: %s", s->description.c_str());
+  native_log("bridge", "receiving: " + s->description + (cfg.record_path.empty() ? "" : ", recording IQ to " + cfg.record_path));
   return nullptr;
 }
 
@@ -233,7 +327,10 @@ extern "C" JNIEXPORT void JNICALL Java_org_ghostnet_monitor_NativeReceiver_nativ
                                                                                        jlong handle) {
   Session* s = session(handle);
   std::lock_guard<std::mutex> lock(s->mutex);
-  if (s->receiver) s->receiver->stop();
+  if (s->receiver) {
+    s->receiver->stop();
+    native_log("bridge", "receiver stopped");
+  }
   s->receiver.reset();
   release_listener(env, s);
 }
@@ -269,7 +366,9 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_org_ghostnet_monitor_NativeReceiv
                                  static_cast<double>(st.last_iq_unix_ms),
                                  static_cast<double>(st.last_frame_unix_ms),
                                  st.spectrum_power_db,
-                                 st.spectrum_peak_db};
+                                 st.spectrum_peak_db,
+                                 st.recording ? 1.0 : 0.0,
+                                 static_cast<double>(st.recorded_bytes)};
   jdoubleArray out = env->NewDoubleArray(static_cast<jsize>(v.size()));
   env->SetDoubleArrayRegion(out, 0, static_cast<jsize>(v.size()), v.data());
   return out;

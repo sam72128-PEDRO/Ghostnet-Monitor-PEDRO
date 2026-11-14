@@ -15,7 +15,9 @@
 // The JS8 *encoder* is used here only to generate the fixture. It is not
 // linked into the Android app.
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -26,6 +28,7 @@
 #include <thread>
 #include <vector>
 
+#include "ghostnet/rx/file_iq_source.hpp"
 #include "ghostnet/rx/receiver.hpp"
 #include "ghostnet/rx/test_signal.hpp"
 #include "js8core/decoder.hpp"
@@ -63,6 +66,7 @@ struct Scenario {
   bool rx_invert = false;   // receiver invert_spectrum setting
   bool expect_decode = true;
   double audio_hz = 1500.0;
+  std::string record_path;
 };
 
 TestSignal synthesize(const Scenario& s, const std::string& mycall, const std::string& text) {
@@ -109,6 +113,17 @@ void run(const Scenario& s) {
     std::lock_guard<std::mutex> l(m);
     messages.push_back(msg);
   };
+  // Waterfall: keep the per-bin maximum over the whole run.
+  std::vector<float> peak_row;
+  std::size_t rows = 0;
+  float row_bin_hz = 0.0f;
+  cb.on_spectrum = [&](const std::vector<float>& row, float bin_hz) {
+    std::lock_guard<std::mutex> l(m);
+    if (peak_row.size() != row.size()) peak_row.assign(row.size(), -400.0f);
+    for (std::size_t i = 0; i < row.size(); ++i) peak_row[i] = std::max(peak_row[i], row[i]);
+    row_bin_hz = bin_hz;
+    ++rows;
+  };
 
   ReceiverConfig cfg;
   cfg.dial_hz = 7107000;
@@ -117,6 +132,7 @@ void run(const Scenario& s) {
   cfg.invert_spectrum = s.rx_invert;
   cfg.sample_clock_timestamps = true;
   cfg.replay_start_unix_ms = cap.start_unix_ms;
+  cfg.record_path = s.record_path;
 
   Receiver rx(cfg, cb);
   if (!rx.start(nullptr)) {
@@ -155,6 +171,32 @@ void run(const Scenario& s) {
   }
 
   check(st.iq_bytes_dropped == 0, s.name + ": no IQ dropped at replay speed");
+  if (!s.record_path.empty()) {
+    std::FILE* f = std::fopen(s.record_path.c_str(), "rb");
+    long size = -1;
+    if (f) {
+      std::fseek(f, 0, SEEK_END);
+      size = std::ftell(f);
+      std::fclose(f);
+    }
+    check(size == static_cast<long>(cap.iq.size()), s.name + ": recording holds every IQ byte (" +
+                                                        std::to_string(size) + "/" + std::to_string(cap.iq.size()) + ")");
+    check(read_capture_meta(s.record_path).count("start_unix_ms") == 1, s.name + ": recording has .meta with start time");
+  }
+  if (s.expect_decode) {
+    // The signal sits at audio_hz..audio_hz+44 Hz; compare that band's peak
+    // with the median of the whole row.
+    std::vector<float> sorted = peak_row;
+    std::sort(sorted.begin(), sorted.end());
+    const float median = sorted.empty() ? 0.0f : sorted[sorted.size() / 2];
+    float in_band = -400.0f;
+    for (std::size_t i = 0; i < peak_row.size(); ++i) {
+      const double hz = i * row_bin_hz;
+      if (hz >= s.audio_hz - 10 && hz <= s.audio_hz + 50) in_band = std::max(in_band, peak_row[i]);
+    }
+    std::printf("     waterfall: %zu rows, signal band peak %.1f dB vs median %.1f dB\n", rows, in_band, median);
+    check(rows > 100 && in_band - median > 10.0f, s.name + ": waterfall shows the signal at its audio offset");
+  }
   if (!s.expect_decode) {
     check(frames.empty(), s.name + ": no frames decoded (expected none)");
     return;
@@ -175,10 +217,48 @@ void run(const Scenario& s) {
         s.name + ": assembled complete message '" + expected + "'");
 }
 
+// A recording made by the receiver must replay through a fresh receiver and
+// decode the same message: this is how field captures get debugged.
+void replay_recording(const std::string& path) {
+  std::printf("\n== replay of the receiver's own recording ==\n");
+  const auto meta = read_capture_meta(path);
+  ReceiverConfig cfg;
+  cfg.dial_hz = static_cast<std::uint32_t>(std::stoul(meta.at("dial_hz")));
+  cfg.capture_offset_hz = std::stoi(meta.at("capture_offset_hz"));
+  cfg.sample_rate_hz = static_cast<std::uint32_t>(std::stoul(meta.at("sample_rate_hz")));
+  cfg.sample_clock_timestamps = true;
+  cfg.replay_start_unix_ms = std::stoll(meta.at("start_unix_ms"));
+  std::mutex m;
+  std::vector<AssembledMessage> messages;
+  ReceiverCallbacks cb;
+  cb.on_message = [&](const AssembledMessage& msg) {
+    std::lock_guard<std::mutex> l(m);
+    messages.push_back(msg);
+  };
+  FileIqSource file(path, cfg.sample_rate_hz, replay_speed());
+  Receiver rx(cfg, cb);
+  rx.start(&file);
+  file.wait_finished();
+  rx.wait_idle();
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  rx.stop();
+  std::lock_guard<std::mutex> l(m);
+  const bool ok = messages.size() == 1 && messages[0].complete &&
+                  messages[0].text == "KN4CRD: @GHOSTNET TEST MESSAGE FROM FLORIDA STATION 1";
+  std::printf("     %s\n", messages.empty() ? "(no messages)" : messages[0].text.c_str());
+  check(ok, "recording replays to the same complete message");
+  std::remove(path.c_str());
+  std::remove((path + ".meta").c_str());
+}
+
 }  // namespace
 
 int main() {
-  run({"clean signal", 3.0, 4.0});
+  const std::string rec = "ghostnet_e2e_recording.cu8";
+  Scenario clean{"clean signal", 3.0, 4.0};
+  clean.record_path = rec;
+  run(clean);
+  replay_recording(rec);
   run({"weak signal", 0.8, 10.0, false, false, true, 1100.0});
   run({"inverted capture, invert on", 3.0, 4.0, true, true});
   run({"inverted capture, invert off", 3.0, 4.0, true, false, false});

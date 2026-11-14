@@ -22,9 +22,9 @@ hardware. Everything else stays on the backlog until that passes.
 DSP → 12 kHz PCM → js8core → frames → messages → UI → session log, on the
 SM-T733, with at least one real decoded JS8 frame.
 
-**Deferred past M1:** DigiRig Mobile/Lite, RTTY, 2G ALE, analog voice,
-the Schedule tab UI (the schedule logic itself is done), Settings tab,
-full Compose four-tab navigation.
+**Deferred past M1:** DigiRig Mobile/Lite, RTTY, 2G ALE, analog voice.
+(The four-tab UI, schedule, export and settings were brought forward and
+are done; see below.)
 
 ### WS1 — Repo hygiene and provenance
 
@@ -115,6 +115,31 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
 - [x] CI (`.github/workflows/ci.yml`): host native tests (also with ARM
       char semantics), Android unit tests, APK build, a check that APK
       permissions stay receive-only, and the APK uploaded as an artifact.
+
+### Application completed ahead of hardware test (v0.3-m1)
+
+- [x] Jetpack Compose four-tab app per spec 7.1: Receive (presets, status
+      lines, live waterfall with decode markers, messages/raw frames),
+      Schedule (all windows, region filters, tap-to-tune JS8, Coming Soon
+      for other modes, full frequency catalog), Export (session browser,
+      JSON/CSV/TXT, IQ recordings as zip, diagnostics), Settings (receiver,
+      recording, diagnostics/self-test, retention, about/licences).
+- [x] Waterfall: native 2048-point FFT of the demodulated audio, 10 Hz
+      bins 0-3 kHz, ~12 rows/s; tested to show a synthetic JS8 signal at
+      its offset (30 dB clean, 12 dB weak above the noise median).
+- [x] On-tablet raw IQ recording (.cu8 + .meta, size-capped, dropped spans
+      kept as neutral samples); tested byte-exact and replays to the same
+      decoded message.
+- [x] Diagnostics: persistent rotating event log, librtlsdr/libusb stderr
+      captured (Android discards it otherwise), periodic receiver stats,
+      Java crash capture, Android exit reasons (incl. native crash/ANR),
+      single-file export with device/USB/settings/sessions/logcat.
+- [x] Robolectric UI and data tests (16 JVM tests in total). These caught
+      a real bug: the retention query compared a number to a text-bound
+      parameter, which would have deleted every finished session.
+- Deferred, needs a decision or hardware first: auto clock-drift
+  correction, release signing and licence screen (WS2), DigiRig / RTTY /
+  ALE / analog.
 
 ### WS6 — Hardware validation on the SM-T733 (owner)
 

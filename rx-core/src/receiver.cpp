@@ -9,6 +9,8 @@
 #include <span>
 #include <thread>
 
+#include "ghostnet/rx/file_iq_source.hpp"
+#include "ghostnet/rx/spectrum.hpp"
 #include "js8core/engine.hpp"
 
 namespace ghostnet::rx {
@@ -69,6 +71,7 @@ struct Receiver::Impl {
         callbacks(std::move(cbs)),
         demod(make_demod_config(cfg)),
         agc(kAudioRate),
+        spectrum(kAudioRate),
         assembler([this](const AssembledMessage& m) { pending_messages.push_back(m); }) {}
 
   static rf::SsbDemodulatorConfig make_demod_config(const ReceiverConfig& cfg) {
@@ -86,6 +89,7 @@ struct Receiver::Impl {
   ReceiverCallbacks callbacks;
   rf::SsbDemodulator demod;
   rf::SlowAgc agc;
+  SpectrumAnalyzer spectrum;
   std::unique_ptr<js8core::Js8Engine> engine;
   IqSource* source = nullptr;
 
@@ -109,6 +113,9 @@ struct Receiver::Impl {
   std::vector<float> audio;
   std::vector<std::int16_t> pcm;
   Steady::time_point last_tick;
+  std::FILE* record_file = nullptr;
+  bool record_meta_written = false;
+  std::uint64_t recorded_bytes = 0;
 
   // ---- shared ----
   std::atomic<std::int64_t> latest_audio_wall_ms{0};
@@ -178,6 +185,13 @@ struct Receiver::Impl {
       stats = ReceiverStats{};
       stats.running = true;
     }
+    if (!config.record_path.empty()) {
+      record_file = std::fopen(config.record_path.c_str(), "wb");
+      if (!record_file) log("could not open IQ recording file " + config.record_path);
+      std::lock_guard<std::mutex> lock(stats_mutex);
+      stats.recording = record_file != nullptr;
+    }
+
     stopping = false;
     last_tick = Steady::now();
     dsp_thread = std::thread([this] { dsp_loop(); });
@@ -208,6 +222,7 @@ struct Receiver::Impl {
     }
     queue_cv.notify_all();
     if (dsp_thread.joinable()) dsp_thread.join();
+    close_recording("session stopped");
     if (engine) {
       engine->stop();
       engine.reset();
@@ -295,6 +310,8 @@ struct Receiver::Impl {
     const auto chunk_start_time =
         anchor_time + seconds((static_cast<double>(start_pair) - static_cast<double>(anchor_pairs)) / fs);
 
+    if (record_file) record_chunk(chunk, chunk_start_time);
+
     // IQ level / clipping, for the Signal indicator and gain advice.
     double power = 0.0;
     std::uint64_t clipped = 0;
@@ -320,6 +337,11 @@ struct Receiver::Impl {
     }
     pcm.assign(pad, 0);
     agc.process(audio.data(), audio.size(), &pcm);
+    if (callbacks.on_spectrum) {
+      spectrum.process(audio.data(), audio.size(), [this](const std::vector<float>& row, float bin_hz) {
+        if (callbacks_active) callbacks.on_spectrum(row, bin_hz);
+      });
+    }
 
     if (!pcm.empty() && engine) {
       const auto captured_at =
@@ -358,6 +380,48 @@ struct Receiver::Impl {
     }
   }
 
+  void record_chunk(const Chunk& chunk, Steady::time_point chunk_start_time) {
+    if (!record_meta_written) {
+      record_meta_written = true;
+      write_capture_meta(config.record_path,
+                         {{"dial_hz", std::to_string(config.dial_hz)},
+                          {"center_hz", std::to_string(capture_center_hz(config))},
+                          {"capture_offset_hz", std::to_string(config.capture_offset_hz)},
+                          {"sample_rate_hz", std::to_string(config.sample_rate_hz)},
+                          {"invert_spectrum", config.invert_spectrum ? "1" : "0"},
+                          {"start_unix_ms", std::to_string(wall_ms(chunk_start_time))},
+                          {"format", "cu8"},
+                          {"recorder", "GhostNet Monitor"}});
+    }
+    // Dropped spans are written as neutral samples so a replay keeps the
+    // same timeline the live decoder saw.
+    if (chunk.gap_pairs > 0) {
+      static const std::uint8_t neutral[2] = {127, 128};
+      for (std::uint64_t i = 0; i < chunk.gap_pairs && record_file; ++i) std::fwrite(neutral, 1, 2, record_file);
+      recorded_bytes += chunk.gap_pairs * 2;
+    }
+    if (record_file) {
+      std::fwrite(chunk.data.data(), 1, chunk.data.size(), record_file);
+      recorded_bytes += chunk.data.size();
+    }
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex);
+      stats.recorded_bytes = recorded_bytes;
+    }
+    if (config.record_max_bytes > 0 && recorded_bytes >= config.record_max_bytes) {
+      close_recording("size limit reached");
+    }
+  }
+
+  void close_recording(const std::string& why) {
+    if (!record_file) return;
+    std::fclose(record_file);
+    record_file = nullptr;
+    log("IQ recording closed (" + why + "): " + std::to_string(recorded_bytes) + " bytes in " + config.record_path);
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    stats.recording = false;
+  }
+
   void on_engine_event(const js8core::events::Variant& ev) {
     if (!callbacks_active) return;
     if (const auto* w = std::get_if<js8core::events::SyncStart>(&ev)) {
@@ -380,7 +444,6 @@ struct Receiver::Impl {
         stats.spectrum_power_db = s->power_db;
         stats.spectrum_peak_db = s->peak_db;
       }
-      if (callbacks.on_spectrum) callbacks.on_spectrum(s->bins, s->bin_hz);
     }
   }
 
