@@ -3,6 +3,10 @@ package org.ghostnet.monitor.ui
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -81,7 +85,9 @@ fun ReceiveScreen(controller: AppController) {
         ReceiveSettings.save(context, s)
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    // Tablet landscape: controls and waterfall on the left, decoded output on
+    // the right, so messages always get most of the screen height.
+    val controls: @Composable ColumnScope.() -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("GhostNet Monitor", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -146,19 +152,38 @@ fun ReceiveScreen(controller: AppController) {
                 if (notes.isNotEmpty()) Text(notes.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
             }
         }
-
-        Card(Modifier.fillMaxWidth().height(200.dp).padding(top = 8.dp)) {
-            Box(Modifier.padding(8.dp)) { WaterfallView(Modifier.fillMaxSize()) }
-        }
-
+    }
+    val waterfall: @Composable (Modifier) -> Unit = { mod ->
+        Card(mod) { Box(Modifier.padding(8.dp)) { WaterfallView(Modifier.fillMaxSize()) } }
+    }
+    val panel: @Composable (Modifier) -> Unit = { mod ->
         when (mode) {
-            RxMode.JS8 -> Js8Panel(Modifier.weight(1f), phase, showFrames, groupsOnly, { showFrames = it }) {
+            RxMode.JS8 -> Js8Panel(mod, phase, showFrames, groupsOnly, { showFrames = it }) {
                 groupsOnly = it
                 AppPrefs.setGroupsOnly(context, it)
             }
-            RxMode.RTTY -> RttyPanel(Modifier.weight(1f), phase)
-            RxMode.ALE -> AlePanel(Modifier.weight(1f), phase, showFrames) { showFrames = it }
-            RxMode.VOICE_SSB, RxMode.VOICE_FM -> VoicePanel(Modifier.weight(1f), active, busy) { choose(it) }
+            RxMode.RTTY -> RttyPanel(mod, phase)
+            RxMode.ALE -> AlePanel(mod, phase, showFrames) { showFrames = it }
+            RxMode.VOICE_SSB, RxMode.VOICE_FM -> VoicePanel(mod, active, busy) { choose(it) }
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        if (maxWidth >= 840.dp && maxWidth > maxHeight) {
+            Row(Modifier.fillMaxSize()) {
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    controls()
+                    waterfall(Modifier.fillMaxWidth().weight(1f).heightIn(min = 120.dp).padding(top = 8.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f).fillMaxHeight()) { panel(Modifier.weight(1f)) }
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                controls()
+                waterfall(Modifier.fillMaxWidth().height(200.dp).padding(top = 8.dp))
+                panel(Modifier.weight(1f).heightIn(min = 160.dp))
+            }
         }
     }
 }
@@ -301,7 +326,8 @@ private fun VoicePanel(modifier: Modifier, settings: ReceiveSettings, busy: Bool
 @Composable
 private fun EmptyHint(phase: MonitorState.Phase) {
     Text(
-        if (phase == MonitorState.Phase.RECEIVING) "Nothing decoded yet. Decoded traffic appears here." else "Not receiving.",
+        if (phase == MonitorState.Phase.RECEIVING) "Nothing decoded yet. Decoded messages appear here as they arrive, newest at the top."
+        else "Not receiving. Messages from past sessions are on the Export tab (tap a session to read it).",
         modifier = Modifier.padding(12.dp),
     )
 }

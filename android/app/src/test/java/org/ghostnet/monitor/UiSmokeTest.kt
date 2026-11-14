@@ -1,6 +1,7 @@
 package org.ghostnet.monitor
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -76,6 +77,15 @@ class UiSmokeTest {
 
         compose.onNodeWithText("JS8").performClick()
         compose.onNodeWithText("Messages").assertExists()
+    }
+
+    /** SM-T733 in landscape (2000x1200 px): decoded messages must be on screen, not squeezed out. */
+    @Test
+    @Config(sdk = [34], qualifiers = "w1143dp-h686dp-land-xhdpi")
+    fun tabletLandscapeShowsMessages() {
+        receiveTabShowsLiveSession()
+        compose.onNodeWithText("KN4CRD: @GHOSTNET TEST MESSAGE").assertIsDisplayed()
+        compose.onNodeWithText("STOP").assertIsDisplayed()
     }
 
     @Test
