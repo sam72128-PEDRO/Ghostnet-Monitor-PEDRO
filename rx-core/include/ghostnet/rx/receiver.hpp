@@ -42,6 +42,14 @@ struct ReceiverConfig {
   rf::Sideband sideband = rf::Sideband::kUsb;
   bool invert_spectrum = false;
 
+  // JS8 only: if nothing has decoded after auto_invert_after_s of audio,
+  // flip the spectrum orientation; if the other orientation also decodes
+  // nothing for as long, flip back and stop trying. The first decode locks
+  // the orientation (stats.invert_active / invert_confirmed).
+  bool auto_invert = false;
+  int auto_invert_after_s = 600;
+  int auto_invert_retry_s = 600;  // time on the flipped orientation before reverting
+
   // js8core SubmodeId bitmask: bit0 Normal(A), bit1 Fast(B), bit2 Turbo(C),
   // bit3 Slow(E), bit4 Ultra(I). GhostNet nets use Normal.
   int submode_mask = 0b01111;
@@ -69,6 +77,10 @@ struct ReceiverConfig {
     std::vector<std::uint32_t> channels_hz;
     int dwell_ms = 1000;
     int hold_ms = 4000;
+    // A channel whose retune fails this many times in a row is skipped for
+    // skip_s seconds, so one bad channel can't stall the scan.
+    int max_retune_failures = 3;
+    int skip_s = 300;
   } ale;
 
   // Voice (modes kVoiceSsb / kVoiceFm). Squelch applies to FM only: audio is
@@ -127,6 +139,11 @@ struct ReceiverStats {
   std::uint64_t ale_transmissions = 0;
   std::uint64_t retunes = 0;
   std::uint64_t retune_failures = 0;
+  int channels_skipped = 0;          // channels currently skipped after repeated retune failures
+  // Spectrum orientation in use, and whether a decode has confirmed it.
+  bool invert_active = false;
+  bool invert_confirmed = false;
+  int invert_flips = 0;
 };
 
 struct ReceiverCallbacks {
@@ -174,6 +191,11 @@ class Receiver {
 
   // Feed IQ directly (tests, replay without an IqSource).
   void push_iq(const std::uint8_t* iq, std::size_t bytes);
+
+  // Feed already-demodulated audio (12 kHz mono, +-1 full scale) instead of
+  // IQ: runs everything after the demodulator. For real off-air audio
+  // recordings (WAV) in tests and in ghostnet-rx.
+  void push_audio(const float* samples, std::size_t count);
 
   // Blocks until everything queued so far has been demodulated and handed
   // to the decoder. Test/replay helper.

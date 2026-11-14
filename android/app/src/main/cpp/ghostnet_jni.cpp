@@ -204,7 +204,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     JNIEnv* env, jclass, jlong handle, jint dial_hz, jint sample_rate_hz, jint capture_offset_hz, jboolean usb,
     jboolean invert_spectrum, jint ppm, jboolean rtl_agc, jint direct_sampling, jint submode_mask, jstring record_path, jlong record_max_bytes,
     jboolean verbose_log, jint mode, jdouble rtty_center_hz, jdouble rtty_shift_hz, jboolean rtty_reverse,
-    jboolean fm_squelch, jintArray ale_channels, jint ale_dwell_ms, jobject listener) {
+    jboolean fm_squelch, jintArray ale_channels, jint ale_dwell_ms, jboolean auto_invert, jobject listener) {
   Session* s = session(handle);
   std::lock_guard<std::mutex> lock(s->mutex);
   if (!s->source) return jstr(env, "no receiver open");
@@ -238,6 +238,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     if (!cfg.ale.channels_hz.empty()) cfg.dial_hz = cfg.ale.channels_hz.front();  // tune the first channel
   }
   cfg.ale.dwell_ms = ale_dwell_ms > 0 ? ale_dwell_ms : 1000;
+  cfg.auto_invert = auto_invert;
   if (record_path) {
     const char* p = env->GetStringUTFChars(record_path, nullptr);
     cfg.record_path = p ? p : "";
@@ -476,7 +477,11 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_org_ghostnet_monitor_NativeReceiv
                                  static_cast<double>(st.ale_transmissions),
                                  static_cast<double>(st.retunes),
                                  static_cast<double>(st.retune_failures),
-                                 static_cast<double>(st.ale_channel_index)};
+                                 static_cast<double>(st.ale_channel_index),
+                                 st.invert_active ? 1.0 : 0.0,
+                                 st.invert_confirmed ? 1.0 : 0.0,
+                                 static_cast<double>(st.invert_flips),
+                                 static_cast<double>(st.channels_skipped)};
   jdoubleArray out = env->NewDoubleArray(static_cast<jsize>(v.size()));
   env->SetDoubleArrayRegion(out, 0, static_cast<jsize>(v.size()), v.data());
   return out;

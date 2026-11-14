@@ -53,6 +53,7 @@ class RtlSdrSource : public IqSource {
   bool start(DataFn on_data, ErrorFn on_error) override;
   void stop() override;
   bool retune(std::uint32_t center_hz) override;
+  std::string last_retune_detail() const override { return retune_detail_; }
   std::string description() const override;
 
   // After configure(): what the driver actually ended up doing.
@@ -71,6 +72,7 @@ class RtlSdrSource : public IqSource {
   DataFn on_data_;
   ErrorFn on_error_;
   RtlSdrSettings settings_;
+  std::string retune_detail_;
 };
 
 }  // namespace ghostnet::rx

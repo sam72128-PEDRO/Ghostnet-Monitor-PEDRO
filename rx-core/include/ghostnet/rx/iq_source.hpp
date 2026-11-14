@@ -32,6 +32,10 @@ class IqSource {
     return false;
   }
 
+  // What the last retune() actually did (e.g. "centre 7129500 Hz, direct
+  // sampling 2"), or why it failed. For the diagnostics log.
+  virtual std::string last_retune_detail() const { return {}; }
+
   virtual std::string description() const = 0;
 };
 

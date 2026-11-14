@@ -140,6 +140,8 @@ object Status {
             RxMode.JS8 -> {
                 val (h, t) = when {
                     s.decodePasses == 0L -> Health.CHECK to "Waiting for the first 15 s decode window"
+                    s.frames == 0L && s.invertFlips > 0 -> Health.CHECK to
+                        "Nothing decoded with the original setting; now trying the spectrum ${if (s.invertActive) "INVERTED" else "normal"} (automatic check, ${s.decodePasses} passes)"
                     s.frames == 0L && running > 10 * 60_000 ->
                         Health.CHECK to "No JS8 decoded in ${running / 60_000} min (${s.decodePasses} passes). If signals show on the waterfall, try Invert spectrum."
                     s.frames == 0L -> Health.OK to "Listening · ${s.decodePasses} decode passes · nothing decoded yet"
@@ -162,8 +164,9 @@ object Status {
                         "The receiver refused to change channel; scanning stopped on $ch. Send report.")
                     s.aleSync || s.aleHolding -> StatusLine("Decoder", Health.OK,
                         (if (s.aleScanning) "HOLDING on $ch: ALE activity" else "ALE activity on $ch") + " · $counts")
-                    s.aleScanning -> StatusLine("Decoder", Health.OK,
-                        "Scanning · now $ch (channel ${s.aleChannelIndex + 1}) · $counts")
+                    s.aleScanning -> StatusLine("Decoder", if (s.channelsSkipped > 0) Health.CHECK else Health.OK,
+                        "Scanning · now $ch (channel ${s.aleChannelIndex + 1}) · $counts" +
+                            if (s.channelsSkipped > 0) " · ${s.channelsSkipped} channel(s) skipped: won't tune" else "")
                     else -> StatusLine("Decoder", Health.OK, "Listening on $ch · $counts")
                 }
             }

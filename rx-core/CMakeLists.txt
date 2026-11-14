@@ -50,6 +50,7 @@ add_library(ghostnet_rx_core STATIC
   src/spectrum.cpp
   src/rtty.cpp
   src/ale.cpp
+  src/wav_audio.cpp
 )
 add_library(ghostnet::rx_core ALIAS ghostnet_rx_core)
 target_include_directories(ghostnet_rx_core PUBLIC include)

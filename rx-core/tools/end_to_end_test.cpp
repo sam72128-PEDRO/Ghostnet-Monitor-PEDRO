@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <map>
+#include <set>
 #include <mutex>
 #include <random>
 #include <cmath>
@@ -35,6 +36,7 @@
 #include "ghostnet/rx/receiver.hpp"
 #include "ghostnet/rx/rtty_test_signal.hpp"
 #include "ghostnet/rx/test_signal.hpp"
+#include "ghostnet/rx/wav_audio.hpp"
 #include "js8core/decoder.hpp"
 #include "js8core/protocol/constants.hpp"
 #include "js8core/protocol/costas.hpp"
@@ -71,6 +73,7 @@ struct Scenario {
   bool expect_decode = true;
   double audio_hz = 1500.0;
   std::string record_path;
+  int auto_invert_after_s = 0;  // >0: enable the automatic orientation check
 };
 
 TestSignal synthesize(const Scenario& s, const std::string& mycall, const std::string& text) {
@@ -137,6 +140,8 @@ void run(const Scenario& s) {
   cfg.sample_clock_timestamps = true;
   cfg.replay_start_unix_ms = cap.start_unix_ms;
   cfg.record_path = s.record_path;
+  cfg.auto_invert = s.auto_invert_after_s > 0;
+  cfg.auto_invert_after_s = s.auto_invert_after_s;
 
   Receiver rx(cfg, cb);
   if (!rx.start(nullptr)) {
@@ -175,6 +180,18 @@ void run(const Scenario& s) {
   }
 
   check(st.iq_bytes_dropped == 0, s.name + ": no IQ dropped at replay speed");
+  if (s.auto_invert_after_s > 0) {
+    std::printf("     orientation: invert now %d, flips %d, confirmed %d (capture starts %.1f s before the first slot)\n",
+                st.invert_active, st.invert_flips, st.invert_confirmed,
+                (cap.first_slot_unix_ms - cap.start_unix_ms) / 1000.0);
+    const int expect_flips = s.mirrored ? 1 : 0;
+    check(st.invert_flips == expect_flips && st.invert_active == s.mirrored && st.invert_confirmed,
+          s.name + (s.mirrored ? ": automatic check flipped once to the orientation that decodes, then locked"
+                               : ": orientation confirmed by the first decode, never flipped"));
+    check(frames.size() + 1 >= cap.frames, s.name + ": frames decode after the flip (" + std::to_string(frames.size()) + "/" +
+                                               std::to_string(cap.frames) + ")");
+    return;
+  }
   if (!s.record_path.empty()) {
     std::FILE* f = std::fopen(s.record_path.c_str(), "rb");
     long size = -1;
@@ -437,16 +454,20 @@ class ScanTestSource : public IqSource {
     if (thread_.joinable()) thread_.join();
   }
   bool retune(std::uint32_t center_hz) override {
-    center_ = center_hz;
     ++retunes_;
+    if (broken_.count(center_hz - 25000)) return false;  // simulated refusal
+    center_ = center_hz;
     return true;
   }
+  // Channels (dial Hz) the simulated dongle refuses to tune.
+  void break_channel(std::uint32_t dial) { broken_.insert(dial); }
   std::string description() const override { return "scan test source"; }
   bool done() const { return done_; }
   int retunes() const { return retunes_; }
 
  private:
   std::map<std::uint32_t, std::vector<float>> tracks_;
+  std::set<std::uint32_t> broken_;
   std::atomic<std::uint32_t> center_;
   double seconds_, speed_;
   std::atomic<bool> running_{false}, done_{false};
@@ -470,7 +491,8 @@ void put_ale(std::vector<float>& track, double t0, const std::vector<std::uint32
 void ale_scanning_through_receiver() {
   std::printf("\n== 2G ALE scanning through the full receiver (simulated dongle with retune) ==\n");
   const double secs = 32.0;
-  const std::vector<std::uint32_t> channels = {3598500, 7104500, 10128500, 14111500};
+  // 28.1085 MHz is refused by the simulated dongle: the scan must skip it.
+  const std::vector<std::uint32_t> channels = {3598500, 7104500, 10128500, 14111500, 28108500};
   std::map<std::uint32_t, std::vector<float>> tracks;
   for (auto c : channels) tracks[c].assign(static_cast<std::size_t>(secs * 12000.0), 0.0f);
 
@@ -517,6 +539,7 @@ void ale_scanning_through_receiver() {
   ReceiverConfig c0 = cfg;
   c0.dial_hz = channels[0];
   ScanTestSource src(tracks, capture_center_hz(c0), secs, replay_speed());
+  src.break_channel(28108500);
   Receiver rx(cfg, cb);
   rx.start(&src);
   while (!src.done()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -544,10 +567,88 @@ void ale_scanning_through_receiver() {
   check(sounding, "scan stops on 10.1285 MHz and logs the TWS sounding from KX4ABC");
   check(called, "scan stops on 7.1045 MHz and logs N0CALL calling GHOSTNET with AMD 'QRV'");
   check(!wrong_channel, "every transmission is attributed to the channel it was on");
-  check(st.retunes >= 8 && st.retune_failures == 0, "receiver kept scanning between them (" + std::to_string(st.retunes) + " retunes)");
+  check(st.retunes >= 8, "receiver kept scanning between them (" + std::to_string(st.retunes) + " retunes)");
+  check(st.retune_failures >= 3 && st.retune_failures <= 4 && st.channels_skipped == 1,
+        "a channel that won't tune is tried 3 times, then skipped (" + std::to_string(st.retune_failures) +
+            " failures, " + std::to_string(st.channels_skipped) + " skipped)");
   check(!st.recording && st.recorded_bytes == 0, "no IQ recording while scanning");
   std::remove(cfg.record_path.c_str());
   std::remove((cfg.record_path + ".meta").c_str());
+}
+
+// Real off-air recordings arrive as WAV audio. Round-trip synthetic ALE and
+// RTTY through 48 kHz / 44.1 kHz WAV files, the reader (mix, filter,
+// resample to 12 kHz) and Receiver::push_audio.
+void wav_audio_through_receiver() {
+  std::printf("\n== WAV audio input (path for real off-air recordings) ==\n");
+  std::mt19937 rng(3);
+  std::normal_distribution<double> noise(0.0, 0.05);
+  {
+    std::vector<std::uint32_t> words;
+    for (int i = 0; i < 3; ++i) {
+      auto w = ale::address_words(ale::kTo, "GHOSTNET");
+      words.insert(words.end(), w.begin(), w.end());
+    }
+    auto tis = ale::address_words(ale::kTis, "N0CALL");
+    words.insert(words.end(), tis.begin(), tis.end());
+    auto a = ale::synthesize_audio(words, 48000.0, 0.3, 1.0);
+    a.resize(a.size() + 96000, 0.0f);
+    for (auto& v : a) v += static_cast<float>(noise(rng));
+    check(write_wav_mono16("ghostnet_ale_test.wav", a, 48000), "ALE WAV written");
+  }
+  std::vector<float> audio;
+  WavInfo info;
+  std::string err;
+  check(read_wav_mono("ghostnet_ale_test.wav", 12000.0, &audio, &info, &err) && info.sample_rate_hz == 48000,
+        "WAV read and resampled 48 kHz -> 12 kHz " + err);
+  std::vector<ale::Transmission> tx;
+  std::mutex m;
+  ReceiverCallbacks cb;
+  cb.on_ale_transmission = [&](const ale::Transmission& t) {
+    std::lock_guard<std::mutex> g(m);
+    tx.push_back(t);
+  };
+  ReceiverConfig cfg;
+  cfg.mode = ReceiveMode::kAle;
+  cfg.dial_hz = 7104500;
+  cfg.sample_clock_timestamps = true;
+  cfg.replay_start_unix_ms = 1'700'000'000'000;
+  {
+    Receiver rx(cfg, cb);
+    rx.start(nullptr);
+    for (std::size_t off = 0; off < audio.size(); off += 1200)
+      rx.push_audio(audio.data() + off, std::min<std::size_t>(1200, audio.size() - off));
+    rx.wait_idle();
+    rx.stop();
+  }
+  check(tx.size() == 1 && tx[0].kind == ale::Transmission::Kind::kCall && tx[0].from == "N0CALL",
+        "ALE from a WAV file: " + (tx.empty() ? std::string("nothing") : tx[0].summary()));
+
+  RttyTestParams p;
+  p.sample_rate_hz = 44100.0;
+  p.center_hz = 1700.0;
+  auto r = fsk_audio(rtty_frequency_track("RYRYRY CQ GHOSTNET DE N0CALL K\n", p), 44100.0, 0.3);
+  for (auto& v : r) v += static_cast<float>(noise(rng));
+  write_wav_mono16("ghostnet_rtty_test.wav", r, 44100);
+  check(read_wav_mono("ghostnet_rtty_test.wav", 12000.0, &audio, &info, &err), "44.1 kHz WAV read " + err);
+  std::vector<RttyLine> lines;
+  ReceiverCallbacks cb2;
+  cb2.on_rtty_line = [&](const RttyLine& l) {
+    std::lock_guard<std::mutex> g(m);
+    lines.push_back(l);
+  };
+  cfg.mode = ReceiveMode::kRtty;
+  {
+    Receiver rx(cfg, cb2);
+    rx.start(nullptr);
+    rx.push_audio(audio.data(), audio.size());
+    rx.wait_idle();
+    rx.stop();
+  }
+  check(!lines.empty() && lines[0].text.find("CQ GHOSTNET DE N0CALL") != std::string::npos,
+        "RTTY from a WAV file: '" + (lines.empty() ? std::string() : lines[0].text) + "'");
+  std::remove("ghostnet_ale_test.wav");
+  std::remove("ghostnet_rtty_test.wav");
 }
 
 }  // namespace
@@ -561,10 +662,19 @@ int main() {
   run({"weak signal", 0.8, 10.0, false, false, true, 1100.0});
   run({"inverted capture, invert on", 3.0, 4.0, true, true});
   run({"inverted capture, invert off", 3.0, 4.0, true, false, false});
+  {
+    Scenario auto_inv{"inverted capture, automatic orientation check", 3.0, 4.0, true, false};
+    auto_inv.auto_invert_after_s = 2;
+    run(auto_inv);
+    Scenario auto_ok{"normal capture, automatic check never flips", 3.0, 4.0, false, false};
+    auto_ok.auto_invert_after_s = 600;
+    run(auto_ok);
+  }
 
   rtty_through_receiver();
   voice_through_receiver();
   ale_scanning_through_receiver();
+  wav_audio_through_receiver();
 
   {
     std::printf("\n== embedded on-device self-test ==\n");
