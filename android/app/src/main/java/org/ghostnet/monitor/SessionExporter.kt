@@ -28,6 +28,8 @@ object SessionExporter {
         "Receive-only monitor. Decoded text is unauthenticated radio traffic; group labels such as @GSTFLASH are as " +
             "received, not verified. Incomplete messages are flagged, not repaired."
 
+    private const val ALE_NOTE = "For ALE sessions: offset_hz is the channel dial frequency in Hz and flags is the Golay error count; ALE addresses are as received, not verified."
+
     fun suggestedFileName(s: SessionSummary, format: Format): String =
         "GNM_${FILE_TIME.format(Instant.ofEpochMilli(s.startUtcMs))}_${s.protocol}_ALL_${s.id.take(8)}.${format.ext}"
 
@@ -53,6 +55,7 @@ object SessionExporter {
         json.put("app", "GhostNet Monitor ${BuildConfigInfo.VERSION}")
         json.put("source_booklet", "S2 Underground, ${GhostNetPlan.SOURCE}")
         json.put("limitations", LIMITATIONS)
+        json.put("ale_field_note", ALE_NOTE)
         json.put("exported_utc", Instant.now().toString())
         val r = db.readableDatabase
         r.rawQuery("SELECT * FROM sessions WHERE session_id = ?", arrayOf(sessionId)).use {
@@ -96,6 +99,7 @@ object SessionExporter {
         appendLine("# GhostNet Monitor ${BuildConfigInfo.VERSION} session export, schema 1.0, ${GhostNetPlan.SOURCE}")
         appendLine("# session ${s.id}, ${s.state}${s.endReason?.let { " ($it)" } ?: ""}, dial ${s.dialHz} Hz, ${s.settings}")
         appendLine("# $LIMITATIONS")
+        if (s.protocol == "ALE_2G") appendLine("# " + ALE_NOTE)
         row("record_type", "utc", "utc_end", "submode", "offset_hz", "snr_db", "status_or_flags", "from", "to",
             "text", "raw")
         for (m in db.messagesFor(s.id)) {
@@ -124,6 +128,7 @@ object SessionExporter {
         appendLine("GhostNet Monitor ${BuildConfigInfo.VERSION} — session report")
         appendLine("Source plan: S2 Underground, ${GhostNetPlan.SOURCE}")
         appendLine(LIMITATIONS)
+        if (s.protocol == "ALE_2G") appendLine(ALE_NOTE)
         appendLine()
         appendLine("Session:   ${s.id}")
         appendLine("Start:     ${t(s.startUtcMs)}")

@@ -47,13 +47,20 @@ class UiSmokeTest {
         compose.onNodeWithText("Run self-test").assertExists()
         compose.onNodeWithText("Invert spectrum (HF)").assertExists()
         compose.onNodeWithText("Reverse (swap mark and space)").assertExists()
+        compose.onNodeWithText("ALE scanning").assertExists()
     }
 
     @Test
     fun receiveModesSwitchPanelsAndComingSoonIsInert() {
-        compose.onNodeWithText("ALE · Coming Soon").assertExists()
-        compose.onNodeWithText("ALE · Coming Soon").performClick()
+        compose.onNodeWithText("VARA · Coming Soon").assertExists()
+        compose.onNodeWithText("VARA · Coming Soon").performClick()
         compose.onNodeWithText("START RECEIVING").assertExists() // nothing started
+        assertTrue(compose.onAllNodesWithText("ALE · Coming Soon").fetchSemanticsNodes().isEmpty())
+
+        compose.onNodeWithText("ALE (2G)").performClick()
+        compose.onNodeWithText("ALE · scan all 10 GhostNet channels").assertExists()
+        compose.onNodeWithText("Calls & soundings").assertExists()
+        compose.onNodeWithText("Raw words").performClick()
 
         compose.onNodeWithText("RTTY").performClick()
         compose.onNodeWithText("Receiving now").assertExists()

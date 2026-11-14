@@ -72,6 +72,7 @@ fun ScheduleScreen(controller: AppController, onTune: () -> Unit) {
             Card(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(enabled = receivable) {
                     val preset = o.event.frequencyId?.let { Presets.forDial(GhostNetPlan.frequency(it).hz) }
+                        ?: if (o.event.mode == GhostNetPlan.Mode.ALE_2G) Presets.byId("alescan") else null
                     when {
                         preset == null -> controller.toast("No receive preset for this window")
                         receiving -> controller.toast("Stop the current session before changing frequency")

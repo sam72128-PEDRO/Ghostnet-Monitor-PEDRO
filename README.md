@@ -1,16 +1,15 @@
 # GhostNet Monitor
 
 Receive-only Android monitor for the [GhostNet](https://github.com/s2underground/GhostNet)
-network: RTL-SDR in; JS8 and RTTY decoded and logged; LSB and VHF/UHF FM
-voice played live (never recorded). There is no transmit path anywhere in
+network: RTL-SDR in; JS8, RTTY and 2G ALE decoded and logged (ALE with
+10-channel scanning); LSB and VHF/UHF FM voice played live (never recorded). There is no transmit path anywhere in
 the design.
 
-**Current state (v0.4):** JS8, RTTY, LSB voice and FM voice are
+**Current state (v0.5):** JS8, RTTY, 2G ALE, LSB voice and FM voice are
 code-complete and pass all software tests, including full-chain tests in
 RTL-SDR IQ format and on arm64. Nothing has run on real hardware yet;
-[TESTING.md](TESTING.md) is the procedure. 2G ALE is not built yet (see
-PHASE1_PLAN.md); VARA, Winlink, DMR and GhostMesh are Coming Soon per the
-spec.
+[TESTING.md](TESTING.md) is the procedure. VARA, Winlink, DMR and
+GhostMesh are Coming Soon per the spec.
 
 ## Documents
 
@@ -27,7 +26,7 @@ spec.
 | Path | Contents |
 |---|---|
 | `android/` | The app: foreground service, session database, UI, JNI bridge |
-| `rx-core/` | Native receive core: RTL-SDR source, pipeline and modes, JS8 frame unpacking and message assembly, RTTY decoder, waterfall, recording, `ghostnet-rx` desktop tool, tests |
+| `rx-core/` | Native receive core: RTL-SDR source, pipeline and modes, JS8 frame unpacking and message assembly, RTTY decoder, 2G ALE decoder and channel scanner, waterfall, recording, `ghostnet-rx` desktop tool, tests |
 | `rf-frontend/` | DSP: IQ → SSB or narrowband FM audio, with tests |
 | `third_party/` | js8core (MIT), rtl-sdr-blog (GPLv2, patched), libusb (LGPL-2.1), Eigen, CRCpp |
 

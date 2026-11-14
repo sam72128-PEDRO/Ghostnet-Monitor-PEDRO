@@ -154,6 +154,19 @@ object Status {
                     "Locked at %.0f Hz · quality %.2f · %d characters · %d framing errors".format(
                         s.rttyCenterHz, s.rttyQuality, s.rttyCharacters, s.rttyFramingErrors))
             }
+            RxMode.ALE -> {
+                val ch = "%.4f MHz".format(s.aleChannelHz / 1e6)
+                val counts = "${s.aleTransmissions} calls/soundings · ${s.aleWords} words"
+                when {
+                    s.retuneFailures > 0 && s.retuneFailures == s.retunes -> StatusLine("Decoder", Health.PROBLEM,
+                        "The receiver refused to change channel; scanning stopped on $ch. Send report.")
+                    s.aleSync || s.aleHolding -> StatusLine("Decoder", Health.OK,
+                        (if (s.aleScanning) "HOLDING on $ch: ALE activity" else "ALE activity on $ch") + " · $counts")
+                    s.aleScanning -> StatusLine("Decoder", Health.OK,
+                        "Scanning · now $ch (channel ${s.aleChannelIndex + 1}) · $counts")
+                    else -> StatusLine("Decoder", Health.OK, "Listening on $ch · $counts")
+                }
+            }
             RxMode.VOICE_FM -> StatusLine("Audio", Health.OK,
                 if (s.squelchOpen) "Squelch OPEN · signal present · playing" else "Squelch closed · no signal (noise %.2f)".format(s.fmNoise))
             RxMode.VOICE_SSB -> StatusLine("Audio", Health.OK, "Playing LSB audio · AGC %+.0f dB".format(s.agcGainDb))

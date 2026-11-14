@@ -56,7 +56,7 @@ import org.ghostnet.monitor.submodeName
 import java.time.Instant
 
 /** Booklet modes that are visible but not receivable in this build (spec 7.3). */
-private val COMING_SOON = listOf("ALE", "VARA", "Winlink", "DMR", "GhostMesh")
+private val COMING_SOON = listOf("VARA", "Winlink", "DMR", "GhostMesh")
 
 @Composable
 fun ReceiveScreen(controller: AppController) {
@@ -157,6 +157,7 @@ fun ReceiveScreen(controller: AppController) {
                 AppPrefs.setGroupsOnly(context, it)
             }
             RxMode.RTTY -> RttyPanel(Modifier.weight(1f), phase)
+            RxMode.ALE -> AlePanel(Modifier.weight(1f), phase, showFrames) { showFrames = it }
             RxMode.VOICE_SSB, RxMode.VOICE_FM -> VoicePanel(Modifier.weight(1f), active, busy) { choose(it) }
         }
     }
@@ -215,6 +216,45 @@ private fun RttyPanel(modifier: Modifier, phase: MonitorState.Phase) {
                         style = MaterialTheme.typography.labelMedium)
                     SelectionContainer { Text(l.text, fontFamily = FontFamily.Monospace) }
                     HorizontalDivider(Modifier.padding(top = 4.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlePanel(modifier: Modifier, phase: MonitorState.Phase, showWords: Boolean, onShowWords: (Boolean) -> Unit) {
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+            FilterChip(selected = !showWords, onClick = { onShowWords(false) }, label = { Text("Calls & soundings") })
+            Spacer(Modifier.width(6.dp))
+            FilterChip(selected = showWords, onClick = { onShowWords(true) }, label = { Text("Raw words") })
+        }
+        Text("ALE addresses and AMD text are as received, not verified. Commands other than AMD are logged raw, not interpreted.",
+            style = MaterialTheme.typography.labelSmall)
+        val tx = MonitorState.messages().map { it.record }
+        val words = MonitorState.frames().map { it.record }
+        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+            if ((showWords && words.isEmpty()) || (!showWords && tx.isEmpty())) item { EmptyHint(phase) }
+            if (showWords) {
+                items(words) { w ->
+                    Text("%s · %.4f MHz · %-4s  %s  [%s, %d corrections]".format(Fmt.utc(w.slotUtcMs), w.offsetHz / 1e6,
+                        w.kind, w.text.substringAfter(' '), w.raw, w.flags),
+                        fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(vertical = 3.dp))
+                }
+            } else {
+                items(tx) { t ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text("%s (%s local) · %.4f MHz · %s · %d words".format(Fmt.utc(t.firstUtcMs), Fmt.local(t.firstUtcMs),
+                            t.offsetHz / 1e6, t.rawFrames, t.frameCount), style = MaterialTheme.typography.labelMedium)
+                        SelectionContainer {
+                            Text(t.text, fontFamily = FontFamily.Monospace,
+                                color = if (t.complete) MaterialTheme.colorScheme.onSurface else Color(0xFFFFB300),
+                                style = MaterialTheme.typography.bodyLarge)
+                        }
+                        HorizontalDivider(Modifier.padding(top = 6.dp))
+                    }
                 }
             }
         }

@@ -30,14 +30,14 @@ one. That is usually enough to find the cause without guessing.
 
 | Tab | What it's for |
 |---|---|
-| Receive | Mode (JS8 / RTTY / Voice SSB / Voice FM; ALE and others show Coming Soon), frequency preset, Start/Stop, status lines, live waterfall, and the mode's output: messages, RTTY text, or live audio |
-| Schedule | Every GhostNet V1.5 window in Florida time and UTC, region filters. Tap a JS8 window to select its frequency. Other modes are listed as Coming Soon. |
+| Receive | Mode (JS8 / RTTY / ALE (2G) / Voice SSB / Voice FM; VARA and others show Coming Soon), frequency preset, Start/Stop, status lines, live waterfall, and the mode's output: messages, RTTY text, or live audio |
+| Schedule | Every GhostNet V1.5 window in Florida time and UTC, region filters. Tap a window to select its frequency and mode (ALE windows select the 10-channel scan). VARA and others are listed as Coming Soon. |
 | Export | **Send report**, past sessions (view, or export JSON / CSV / TXT), IQ recordings |
 | Settings | Find receiver, Invert spectrum, RTL AGC, PPM, IQ recording, verbose decoder log, **Run self-test**, session retention, about and licences |
 
 ## Step 0: install
 
-Sideload `GhostNet_Monitor_0.4_debug.apk`, or build it:
+Sideload `GhostNet_Monitor_0.5_debug.apk`, or build it:
 
 ```bash
 cd android
@@ -124,6 +124,31 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
 - **LSB voice** (7.190 MHz): emergency-only, so usually silent. Tuning
   there and hearing band noise confirms the path works.
 
+## Step 3d: 2G ALE
+
+Receive → **ALE (2G)** → **ALE · scan all 10 GhostNet channels** → START
+RECEIVING. The Decoder line shows `Scanning · now x.xxxx MHz (channel n)`
+and should step through the list about once a second. Check this first:
+if the channel never changes, or the line says the receiver refused to
+change channel, send a report. That is the part of ALE I could not test
+without the dongle, and the 28.1085 MHz channel additionally makes the
+driver switch out of direct sampling and back on every pass.
+
+Hearing GhostNet ALE needs someone sounding or calling, so it mostly waits
+for an ALE window on the Schedule tab. To check ALE decoding at any time,
+use **TEST · amateur ALE 14.109 MHz** (daytime) or **7.102 MHz** (night).
+These are amateur HFLink channels where stations send soundings around the
+clock, roughly every hour per station, so allow 15–30 minutes. ALE sounds like a fast warbling
+burst, 8 tones between 750 and 2500 Hz; on the waterfall it's a block about
+1.75 kHz wide.
+
+Results: **Calls & soundings** shows e.g. `Sounding from KX4ABC (TIS)` or
+`N0CALL calling GHOSTNET · AMD: …`; **Raw words** shows every decoded word
+with its channel and Golay correction count. If the waterfall shows ALE
+bursts but nothing decodes, try **Invert spectrum** (same reason as JS8) and
+send a report. Scanning doesn't record IQ; for a recording, use a single-channel
+ALE preset with recording on.
+
 ## Step 4: GhostNet windows
 
 Once step 3b decodes, use the Schedule tab: it shows the next window and
@@ -153,6 +178,8 @@ stored.
 1. **Send report** (Export tab), after any test, good or bad. Include the
    recording if nothing decoded.
 2. Which **Invert spectrum** setting decoded (this settles the open question).
+3. For ALE: whether scanning stepped through all 10 channels, and any
+   decoded call or sounding (or a recording of bursts that didn't decode).
 
 ## Step 6 (optional): desktop check with `ghostnet-rx`
 
