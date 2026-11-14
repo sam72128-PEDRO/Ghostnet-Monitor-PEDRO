@@ -49,6 +49,9 @@ class DataExportTest {
         val csv = export(db, s, SessionExporter.Format.CSV)
         assertTrue(csv.contains("\"KN4CRD: @GHOSTNET TEST, WITH \"\"QUOTES\"\"\"")) // RFC 4180 quoting
         assertTrue(csv.lines().any { it.startsWith("frame,") })
+        assertTrue("CSV starts with a UTF-8 BOM", csv.startsWith("\uFEFF"))
+        // Metadata stays in one column: each "#" line is a single quoted field.
+        assertTrue(csv.lines().filter { it.contains("# session") }.all { it.startsWith("\"#") })
 
         val txt = export(db, s, SessionExporter.Format.TXT)
         assertTrue(txt.contains("=== Messages ==="))

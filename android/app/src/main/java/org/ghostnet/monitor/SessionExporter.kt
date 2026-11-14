@@ -42,6 +42,8 @@ object SessionExporter {
         // Write fully, then report; a failed write throws and nothing claims success.
         context.contentResolver.openOutputStream(target, "wt").use { out ->
             requireNotNull(out) { "could not open export destination" }
+            // CSV: a UTF-8 byte-order mark, or Excel and Sheets misread "·" as "Â·".
+            if (format == Format.CSV) out.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
             out.write(body.toByteArray(Charsets.UTF_8))
             out.flush()
         }
@@ -96,10 +98,11 @@ object SessionExporter {
 
     private fun csv(db: SessionDatabase, s: SessionSummary): String = buildString {
         fun row(vararg v: Any?) = appendLine(v.joinToString(",") { csvField(it) })
-        appendLine("# GhostNet Monitor ${BuildConfigInfo.VERSION} session export, schema 1.0, ${GhostNetPlan.SOURCE}")
-        appendLine("# session ${s.id}, ${s.state}${s.endReason?.let { " ($it)" } ?: ""}, dial ${s.dialHz} Hz, ${s.settings}")
-        appendLine("# $LIMITATIONS")
-        if (s.protocol == "ALE_2G") appendLine("# " + ALE_NOTE)
+        // Metadata lines are one quoted field each, so spreadsheets keep them in column A.
+        row("# GhostNet Monitor ${BuildConfigInfo.VERSION} session export, schema 1.0, ${GhostNetPlan.SOURCE}")
+        row("# session ${s.id}, ${s.state}${s.endReason?.let { " ($it)" } ?: ""}, dial ${s.dialHz} Hz, ${s.settings}")
+        row("# $LIMITATIONS")
+        if (s.protocol == "ALE_2G") row("# " + ALE_NOTE)
         row("record_type", "utc", "utc_end", "submode", "offset_hz", "snr_db", "status_or_flags", "from", "to",
             "text", "raw")
         for (m in db.messagesFor(s.id)) {
