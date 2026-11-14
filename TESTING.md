@@ -30,14 +30,14 @@ one. That is usually enough to find the cause without guessing.
 
 | Tab | What it's for |
 |---|---|
-| Receive | Frequency preset, Start/Stop, Device / Signal / Decoder / Clock / Schedule status, live waterfall, decoded messages and raw frames |
+| Receive | Mode (JS8 / RTTY / Voice SSB / Voice FM; ALE and others show Coming Soon), frequency preset, Start/Stop, status lines, live waterfall, and the mode's output: messages, RTTY text, or live audio |
 | Schedule | Every GhostNet V1.5 window in Florida time and UTC, region filters. Tap a JS8 window to select its frequency. Other modes are listed as Coming Soon. |
 | Export | **Send report**, past sessions (view, or export JSON / CSV / TXT), IQ recordings |
 | Settings | Find receiver, Invert spectrum, RTL AGC, PPM, IQ recording, verbose decoder log, **Run self-test**, session retention, about and licences |
 
 ## Step 0: install
 
-Sideload `GhostNet_Monitor_0.3-m1_debug.apk`, or build it:
+Sideload `GhostNet_Monitor_0.4_debug.apk`, or build it:
 
 ```bash
 cd android
@@ -70,7 +70,16 @@ choose GhostNet Monitor; tick "always" if offered. On Receive, the
 access**. If the device isn't seen at all, try the other USB route (direct
 OTG vs. powered hub).
 
-## Step 3: receive on a busy JS8 frequency first
+## Step 3a: quickest RF check, FM weather radio
+
+Receive → **Voice (FM)** → **TEST · NOAA Weather 162.550 MHz** (try 162.400
+or 162.475 if that's silent where you are) → **START LISTENING**. You
+should hear the weather broadcast within seconds, through the speaker or
+headphones. This proves the dongle, USB and audio path end to end with
+the dongle's normal tuner. It doesn't exercise HF direct sampling; step 3b
+does that. Nothing from voice modes is recorded or logged.
+
+## Step 3b: receive on a busy JS8 frequency
 
 On Receive, pick **TEST · JS8 calling 7.078 MHz** (evening/night) or
 **TEST · JS8 calling 14.078 MHz** (daytime). These aren't GhostNet
@@ -103,12 +112,26 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
 3. **Clock.** A tablet more than about 2 s off UTC decodes nothing.
 4. Still nothing: **Send report** and include the recording when asked.
 
+## Step 3c: RTTY and LSB voice
+
+- **RTTY** (7.077 MHz): RTTY isn't on the air continuously, so this mostly
+  waits for the GhostNet window (see Step 4). The Decoder line shows
+  "Searching for an RTTY tone pair" until it locks onto a signal, then
+  text appears under "Receiving now". `~` marks a character with a
+  framing error. If tones lock but the text is garbage, turn on
+  **Reverse** in Settings; if it never locks on a visible signal, try the
+  425 / 850 Hz shifts.
+- **LSB voice** (7.190 MHz): emergency-only, so usually silent. Tuning
+  there and hearing band noise confirms the path works.
+
 ## Step 4: GhostNet windows
 
-Once step 3 decodes, use the Schedule tab: it shows the next window and
-selects the frequency when you tap it. The North America regional net is
-Thursday at 8:00 PM EST / 9:00 PM EDT (Friday 01:00 UTC) on 7.107 MHz.
-Saturday bridges use 14.107 and 3.575 MHz. **GhostNet groups only** on
+Once step 3b decodes, use the Schedule tab: it shows the next window and
+selects the frequency and mode when you tap it. The North America
+regional net is Thursday from 8:00 PM EST / 9:00 PM EDT (Friday 01:00 UTC):
+JS8 on 7.107 MHz, then RTTY on 7.077 at +60 min and LSB voice on 7.190 at
++90 min (VARA at +30 min is Coming Soon). Saturday bridges use 14.107 and
+3.575 MHz. **GhostNet groups only** on
 Receive hides other traffic from the display; everything decoded is still
 stored.
 

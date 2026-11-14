@@ -24,12 +24,14 @@
 #include <cstdlib>
 #include <mutex>
 #include <random>
+#include <cmath>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "ghostnet/rx/file_iq_source.hpp"
 #include "ghostnet/rx/receiver.hpp"
+#include "ghostnet/rx/rtty_test_signal.hpp"
 #include "ghostnet/rx/test_signal.hpp"
 #include "js8core/decoder.hpp"
 #include "js8core/protocol/constants.hpp"
@@ -251,6 +253,142 @@ void replay_recording(const std::string& path) {
   std::remove((path + ".meta").c_str());
 }
 
+// ---- other receive modes through the full Receiver ---------------------
+
+constexpr double kTwoPi = 6.28318530717958647692;
+
+double goertzel_magnitude(const std::vector<float>& x, double hz, double rate) {
+  const double w = kTwoPi * hz / rate, c = 2.0 * std::cos(w);
+  double s1 = 0, s2 = 0;
+  for (float v : x) {
+    const double s0 = v + c * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  const double re = s1 - s2 * std::cos(w), im = s2 * std::sin(w);
+  return std::sqrt(re * re + im * im);
+}
+
+// Audio-rate frequency track (Hz above/below the dial; negative = below)
+// rendered as RTL-SDR u8 IQ at 240 kS/s with the dongle 25 kHz above the dial.
+std::vector<std::uint8_t> iq_from_audio_track(const std::vector<float>& audio_freq, double audio_rate, double noise,
+                                              double amp = 3.0, bool carrier = true) {
+  const auto up = static_cast<std::size_t>(kFs / audio_rate);
+  std::mt19937 rng(11);
+  std::normal_distribution<double> n(0.0, noise);
+  std::vector<std::uint8_t> iq(2 * audio_freq.size() * up);
+  double phase = 0.0;
+  for (std::size_t i = 0; i < audio_freq.size() * up; ++i) {
+    phase = std::remainder(phase + kTwoPi * (audio_freq[i / up] - 25000.0) / kFs, kTwoPi);
+    const double a = carrier && audio_freq[i / up] != 0.0f ? amp : 0.0;
+    iq[2 * i] = static_cast<std::uint8_t>(std::clamp(std::lround(127.5 + a * std::cos(phase) + n(rng)), 0L, 255L));
+    iq[2 * i + 1] = static_cast<std::uint8_t>(std::clamp(std::lround(127.5 + a * std::sin(phase) + n(rng)), 0L, 255L));
+  }
+  return iq;
+}
+
+void push_all(Receiver& rx, const std::vector<std::uint8_t>& iq) {
+  const auto t0 = std::chrono::steady_clock::now();
+  for (std::size_t off = 0; off < iq.size(); off += 16384) {
+    const std::size_t n = std::min<std::size_t>(16384, iq.size() - off);
+    rx.push_iq(iq.data() + off, n);
+    std::this_thread::sleep_until(t0 + std::chrono::duration<double>((off + n) / 2.0 / kFs / replay_speed()));
+  }
+  rx.wait_idle();
+}
+
+void rtty_through_receiver() {
+  std::printf("\n== RTTY 45.45 baud through the full receiver (7.077 MHz USB) ==\n");
+  const std::string text = "RYRYRYRY GHOSTNET RTTY NET CHECK IN DE N0CALL 73\n";
+  RttyTestParams p;
+  p.center_hz = 1830.0;
+  const auto iq = iq_from_audio_track(rtty_frequency_track(text, p), 12000.0, 3.0);
+  std::mutex m;
+  std::vector<RttyLine> lines;
+  ReceiverCallbacks cb;
+  cb.on_rtty_line = [&](const RttyLine& l) {
+    std::lock_guard<std::mutex> g(m);
+    lines.push_back(l);
+  };
+  ReceiverConfig cfg;
+  cfg.mode = ReceiveMode::kRtty;
+  cfg.dial_hz = 7077000;
+  cfg.record_path = "ghostnet_rtty_rec.cu8";
+  Receiver rx(cfg, cb);
+  rx.start(nullptr);
+  push_all(rx, iq);
+  const auto st = rx.stats();
+  rx.stop();
+  std::lock_guard<std::mutex> g(m);
+  std::printf("     centre %.1f Hz locked=%d quality %.2f, %zu line(s): '%s'\n", st.rtty_center_hz, st.rtty_locked,
+              st.rtty_quality, lines.size(), lines.empty() ? "" : lines[0].text.c_str());
+  check(!lines.empty() && lines[0].text.find("GHOSTNET RTTY NET CHECK IN DE N0CALL 73") != std::string::npos,
+        "RTTY text decoded through the full IQ chain");
+  check(std::abs(st.rtty_center_hz - 1830.0) < 10.0, "RTTY auto-centre at 1830 Hz");
+  check(st.recorded_bytes == iq.size(), "digital mode (RTTY) honours IQ recording");
+  std::remove(cfg.record_path.c_str());
+  std::remove((cfg.record_path + ".meta").c_str());
+}
+
+double voice_tone(ReceiveMode mode, bool fm, bool carrier, double tone_hz, double* rms_out, bool* squelch_open,
+                  const std::string& record_path = "") {
+  // 4 s of signal: FM deviation 2.5 kHz around the channel, or an SSB tone.
+  const double audio_rate = 12000.0;
+  const auto n = static_cast<std::size_t>(4.0 * audio_rate);
+  std::vector<float> f(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double t = i / audio_rate;
+    f[i] = fm ? static_cast<float>(0.001 + 2500.0 * std::sin(kTwoPi * tone_hz * t))  // never exactly 0
+              : static_cast<float>(-tone_hz);  // LSB: tone below the dial
+  }
+  const auto iq = iq_from_audio_track(f, audio_rate, fm ? 6.0 : 3.0, fm ? 20.0 : 3.0, carrier);
+  std::mutex m;
+  std::vector<float> audio;
+  ReceiverCallbacks cb;
+  cb.on_audio = [&](const std::int16_t* p, std::size_t k) {
+    std::lock_guard<std::mutex> g(m);
+    for (std::size_t i = 0; i < k; ++i) audio.push_back(p[i] / 32768.0f);
+  };
+  ReceiverConfig cfg;
+  cfg.mode = mode;
+  cfg.sideband = ghostnet::rf::Sideband::kLsb;
+  cfg.record_path = record_path;
+  Receiver rx(cfg, cb);
+  rx.start(nullptr);
+  push_all(rx, iq);
+  const auto st = rx.stats();
+  rx.stop();
+  if (squelch_open) *squelch_open = st.squelch_open;
+  std::lock_guard<std::mutex> g(m);
+  std::vector<float> steady(audio.begin() + std::min<std::size_t>(audio.size(), 12000), audio.end());
+  double ss = 0;
+  for (float v : steady) ss += double(v) * v;
+  *rms_out = steady.empty() ? 0 : std::sqrt(ss / steady.size());
+  return steady.empty() ? 0 : goertzel_magnitude(steady, tone_hz, 12000.0) * 2.0 / steady.size();
+}
+
+void voice_through_receiver() {
+  std::printf("\n== analog voice through the full receiver ==\n");
+  double rms = 0;
+  bool open = false;
+  const double fm_tone = voice_tone(ReceiveMode::kVoiceFm, true, true, 1000.0, &rms, &open);
+  std::printf("     FM carrier: 1 kHz tone %.3f of audio RMS %.3f, squelch open=%d\n", fm_tone / std::sqrt(2.0), rms, open);
+  check(open && fm_tone / std::sqrt(2.0) > 0.7 * rms, "FM voice: 1 kHz tone dominates the audio, squelch open");
+
+  double noise_rms = 1;
+  bool noise_open = true;
+  voice_tone(ReceiveMode::kVoiceFm, true, false, 1000.0, &noise_rms, &noise_open);
+  std::printf("     FM no carrier: audio RMS %.4f, squelch open=%d\n", noise_rms, noise_open);
+  check(!noise_open && noise_rms < 0.01, "FM voice: squelch mutes pure noise");
+
+  const double ssb_tone = voice_tone(ReceiveMode::kVoiceSsb, false, true, 1000.0, &rms, nullptr, "ghostnet_voice_rec.cu8");
+  std::printf("     LSB: 1 kHz tone %.3f of audio RMS %.3f\n", ssb_tone / std::sqrt(2.0), rms);
+  check(ssb_tone / std::sqrt(2.0) > 0.7 * rms, "LSB voice: tone 1 kHz below the dial comes out as 1 kHz audio");
+  std::FILE* f = std::fopen("ghostnet_voice_rec.cu8", "rb");
+  check(f == nullptr, "voice mode never writes an IQ recording, even if asked");
+  if (f) std::fclose(f);
+}
+
 }  // namespace
 
 int main() {
@@ -262,6 +400,9 @@ int main() {
   run({"weak signal", 0.8, 10.0, false, false, true, 1100.0});
   run({"inverted capture, invert on", 3.0, 4.0, true, true});
   run({"inverted capture, invert off", 3.0, 4.0, true, false, false});
+
+  rtty_through_receiver();
+  voice_through_receiver();
 
   {
     std::printf("\n== embedded on-device self-test ==\n");

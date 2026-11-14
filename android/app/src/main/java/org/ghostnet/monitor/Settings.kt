@@ -2,27 +2,64 @@ package org.ghostnet.monitor
 
 import android.content.Context
 
-/** A dial frequency the receiver can tune (USB). */
-data class Preset(val id: String, val label: String, val dialHz: Int, val purpose: String) {
+/** Receive modes available in this build. [nativeId] must match ghostnet_jni.cpp. */
+enum class RxMode(val nativeId: Int, val label: String, val digital: Boolean, val protocol: String) {
+    JS8(0, "JS8", true, "JS8"),
+    RTTY(1, "RTTY", true, "RTTY"),
+    VOICE_SSB(2, "Voice (SSB)", false, "VOICE_SSB"),
+    VOICE_FM(3, "Voice (FM)", false, "VOICE_FM"),
+}
+
+/** A frequency the receiver can tune, with the mode used there. */
+data class Preset(
+    val id: String,
+    val label: String,
+    val dialHz: Int,
+    val purpose: String,
+    val mode: RxMode = RxMode.JS8,
+    val usb: Boolean = true,
+) {
     val isTest: Boolean get() = id.startsWith("test")
 }
 
 object Presets {
-    val JS8 = listOf(
-        Preset("80m", "80 m · 3.575 MHz USB", 3_575_000, "International bridges (NA-AUS, EUR-AUS)"),
-        Preset("40m", "40 m · 7.107 MHz USB", 7_107_000, "Thursday regional nets; AUS-PAC bridge"),
-        Preset("20m", "20 m · 14.107 MHz USB", 14_107_000, "Saturday intercontinental bridges"),
-        // Not GhostNet frequencies: the standard JS8 calling frequencies, which
-        // carry JS8 traffic most hours. Here only to verify reception between
-        // scheduled GhostNet windows; labelled so they cannot be mistaken for nets.
+    val ALL = listOf(
+        // GhostNet V1.5 JS8 (USB)
+        Preset("80m", "80 m · 3.575 MHz JS8", 3_575_000, "International bridges (NA-AUS, EUR-AUS)"),
+        Preset("40m", "40 m · 7.107 MHz JS8", 7_107_000, "Thursday regional nets; AUS-PAC bridge"),
+        Preset("20m", "20 m · 14.107 MHz JS8", 14_107_000, "Saturday intercontinental bridges"),
+        // Not GhostNet frequencies: busy JS8 calling frequencies, for checking
+        // reception between scheduled windows. Labelled so they can't be
+        // mistaken for nets.
         Preset("test40", "TEST · JS8 calling 7.078 MHz", 7_078_000, "Receiver check only, not GhostNet"),
         Preset("test20", "TEST · JS8 calling 14.078 MHz", 14_078_000, "Receiver check only, not GhostNet"),
         Preset("test80", "TEST · JS8 calling 3.578 MHz", 3_578_000, "Receiver check only, not GhostNet"),
+
+        // GhostNet V1.5 RTTY (45.45 baud, USB)
+        Preset("rtty40", "40 m · 7.077 MHz RTTY", 7_077_000, "Regional recovery window, 45.45 baud", RxMode.RTTY),
+
+        // GhostNet V1.5 analog voice: emergency LSB fallback and VHF/UHF FM simplex
+        Preset("lsb40", "40 m · 7.190 MHz LSB voice", 7_190_000, "Emergency-only voice fallback", RxMode.VOICE_SSB, usb = false),
+        Preset("fm2us", "VHF · 146.105 MHz FM", 146_105_000, "USA / Australia / Pacific", RxMode.VOICE_FM),
+        Preset("fm70us", "UHF · 446.105 MHz FM", 446_105_000, "USA / Australia / Pacific", RxMode.VOICE_FM),
+        Preset("fm2eu", "VHF · 144.605 MHz FM", 144_605_000, "Europe / Africa", RxMode.VOICE_FM),
+        Preset("fm70eu", "UHF · 437.105 MHz FM", 437_105_000, "Europe / Africa", RxMode.VOICE_FM),
+        // Not GhostNet: NOAA Weather Radio transmits continuously across the US,
+        // which makes it the easiest way to confirm FM reception any time.
+        Preset("testwx1", "TEST · NOAA Weather 162.550 MHz", 162_550_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
+        Preset("testwx2", "TEST · NOAA Weather 162.400 MHz", 162_400_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
+        Preset("testwx3", "TEST · NOAA Weather 162.475 MHz", 162_475_000, "Receiver check only, not GhostNet", RxMode.VOICE_FM),
     )
 
-    fun byId(id: String?): Preset = JS8.firstOrNull { it.id == id } ?: JS8[1]
+    /** Kept for callers that only deal with JS8. */
+    val JS8: List<Preset> get() = ALL.filter { it.mode == RxMode.JS8 }
 
-    fun forDial(hz: Long): Preset? = JS8.firstOrNull { !it.isTest && it.dialHz.toLong() == hz }
+    fun forMode(mode: RxMode): List<Preset> = ALL.filter { it.mode == mode }
+
+    fun byId(id: String?): Preset = ALL.firstOrNull { it.id == id } ?: ALL[1]
+
+    /** The non-test preset for a published frequency, if the app can receive it. */
+    fun forDial(hz: Long): Preset? = ALL.firstOrNull { !it.isTest && it.dialHz.toLong() == hz }
 }
 
 data class ReceiveSettings(
@@ -30,12 +67,17 @@ data class ReceiveSettings(
     val invertSpectrum: Boolean,
     val rtlAgc: Boolean,
     val ppm: Int,
-    /** Record raw IQ for the whole session (capped by [recordMaxMinutes]). */
+    /** Record raw IQ during digital sessions (capped by [recordMaxMinutes]). Never for voice. */
     val recordIq: Boolean = false,
     val recordMaxMinutes: Int = 10,
     /** Write the decoder's detailed internal log to diagnostics (large). */
     val verboseLog: Boolean = false,
-    /** -1 lets the RTL-SDR Blog driver pick (Q-branch direct sampling below 24 MHz). */
+    val rttyReverse: Boolean = false,
+    val rttyShiftHz: Int = 170,
+    val fmSquelch: Boolean = true,
+    /** Playback volume 0..1 for voice modes. */
+    val volume: Float = 0.8f,
+    /** -1 lets the RTL-SDR Blog driver pick (Q-branch direct sampling below 24 MHz, tuner above). */
     val directSampling: Int = -1,
     val sampleRateHz: Int = 240_000,
     /** The dongle is tuned this far above the dial so its DC spike stays out of the audio. */
@@ -43,15 +85,19 @@ data class ReceiveSettings(
     /** js8core SubmodeId bits: Normal, Fast, Turbo, Slow. */
     val submodeMask: Int = 0b01111,
 ) {
+    val mode: RxMode get() = preset.mode
+
     /** 240 kS/s x 2 bytes. */
     val recordMaxBytes: Long get() = recordMaxMinutes * 60L * sampleRateHz * 2
 
     fun describe(): String = buildString {
-        append(preset.label)
+        append(preset.label).append(" (").append(mode.label).append(")")
         append(", ppm ").append(ppm)
         append(", RTL AGC ").append(if (rtlAgc) "on" else "off")
         if (invertSpectrum) append(", spectrum inverted")
-        if (recordIq) append(", recording IQ (max ").append(recordMaxMinutes).append(" min)")
+        if (mode == RxMode.RTTY) append(", RTTY shift ").append(rttyShiftHz).append(" Hz").append(if (rttyReverse) " reversed" else "")
+        if (mode == RxMode.VOICE_FM) append(", squelch ").append(if (fmSquelch) "on" else "off")
+        if (recordIq && mode.digital) append(", recording IQ (max ").append(recordMaxMinutes).append(" min)")
         if (verboseLog) append(", verbose decoder log")
     }
 
@@ -68,6 +114,10 @@ data class ReceiveSettings(
                 recordIq = p.getBoolean("record_iq", false),
                 recordMaxMinutes = p.getInt("record_max_minutes", 10),
                 verboseLog = p.getBoolean("verbose_log", false),
+                rttyReverse = p.getBoolean("rtty_reverse", false),
+                rttyShiftHz = p.getInt("rtty_shift", 170),
+                fmSquelch = p.getBoolean("fm_squelch", true),
+                volume = p.getFloat("volume", 0.8f),
             )
         }
 
@@ -80,6 +130,10 @@ data class ReceiveSettings(
                 .putBoolean("record_iq", s.recordIq)
                 .putInt("record_max_minutes", s.recordMaxMinutes)
                 .putBoolean("verbose_log", s.verboseLog)
+                .putBoolean("rtty_reverse", s.rttyReverse)
+                .putInt("rtty_shift", s.rttyShiftHz)
+                .putBoolean("fm_squelch", s.fmSquelch)
+                .putFloat("volume", s.volume)
                 .apply()
         }
     }

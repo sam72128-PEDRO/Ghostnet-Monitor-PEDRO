@@ -141,6 +141,26 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
   correction, release signing and licence screen (WS2), DigiRig / RTTY /
   ALE / analog.
 
+### More receive modes (v0.4, ahead of hardware test)
+
+- [x] Analog voice, live playback only (never stored, per spec 2.3/8.5):
+      LSB for the 7.190 MHz fallback (existing SSB path) and VHF/UHF
+      narrowband FM (new demodulator: 37.6 dB adjacent-channel rejection,
+      de-emphasis, noise squelch). TEST presets on NOAA Weather Radio.
+- [x] RTTY 45.45 baud: own decoder (matched filters, start-bit sync,
+      US-TTY Baudot, unshift-on-space), automatic tone-pair search,
+      reverse and 170/425/850 Hz shift options, framing errors shown as
+      `~` and never guessed, quality gate so noise prints nothing. Tested
+      standalone and through the full IQ chain.
+- [x] Receive modes in the native receiver; the JS8 engine only runs in JS8
+      mode; voice mode refuses IQ recording even if configured.
+- [ ] **2G ALE: blocked.** It needs MIL-STD-188-141 framing details (Golay
+      coding, interleave, tone mapping) from a reference implementation or
+      real recordings. Writing it from memory would pass my own synthetic
+      tests and still fail on air. The spec's candidate, PC-ALE (MIT), could
+      not be attached in this environment. It stays Coming Soon until the
+      reference is available.
+
 ### WS6 — Hardware validation on the SM-T733 (owner)
 
 - [ ] Self-test PASS on the tablet, with its real-time factor.

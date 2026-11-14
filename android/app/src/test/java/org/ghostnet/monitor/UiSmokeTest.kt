@@ -45,7 +45,30 @@ class UiSmokeTest {
 
         compose.onNodeWithText("Settings").performClick()
         compose.onNodeWithText("Run self-test").assertExists()
-        compose.onNodeWithText("Invert spectrum").assertExists()
+        compose.onNodeWithText("Invert spectrum (HF)").assertExists()
+        compose.onNodeWithText("Reverse (swap mark and space)").assertExists()
+    }
+
+    @Test
+    fun receiveModesSwitchPanelsAndComingSoonIsInert() {
+        compose.onNodeWithText("ALE · Coming Soon").assertExists()
+        compose.onNodeWithText("ALE · Coming Soon").performClick()
+        compose.onNodeWithText("START RECEIVING").assertExists() // nothing started
+
+        compose.onNodeWithText("RTTY").performClick()
+        compose.onNodeWithText("Receiving now").assertExists()
+        compose.onNodeWithText("40 m · 7.077 MHz RTTY").assertExists()
+
+        compose.onNodeWithText("Voice (FM)").performClick()
+        compose.onNodeWithText("Audio is not recorded or logged").assertExists()
+        compose.onNodeWithText("Squelch (mute when no signal)").assertExists()
+        compose.onNodeWithText("START LISTENING").assertExists()
+
+        compose.onNodeWithText("Voice (SSB)").performClick()
+        compose.onNodeWithText("40 m · 7.190 MHz LSB voice").assertExists()
+
+        compose.onNodeWithText("JS8").performClick()
+        compose.onNodeWithText("Messages").assertExists()
     }
 
     @Test

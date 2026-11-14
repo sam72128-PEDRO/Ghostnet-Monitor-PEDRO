@@ -19,9 +19,23 @@ object MonitorState {
     @Volatile var deviceText: String = ""; private set
     @Volatile var error: String? = null; private set
     @Volatile var stats: NativeReceiver.Stats? = null; private set
-    @Volatile var sessionId: String? = null; private set
+    @Volatile var sessionId: String? = null; private set  // null for voice (never logged)
     @Volatile var sessionStartMs: Long = 0; private set
     @Volatile var recordingName: String? = null; private set
+    /** Playback volume for voice modes, applied live by the service. */
+    @Volatile var volume: Float = 0.8f
+    private val rttyLive = StringBuilder()
+
+    /** The RTTY line currently being received (last ~300 characters). */
+    fun rttyLive(): String = synchronized(lock) { rttyLive.toString() }
+
+    fun appendRtty(text: String) {
+        synchronized(lock) {
+            if (text == "\r" || text == "\n") rttyLive.append(' ') else rttyLive.append(text)
+            if (rttyLive.length > 300) rttyLive.delete(0, rttyLive.length - 300)
+        }
+        changed()
+    }
 
     private const val MAX_LINES = 500
     private val lock = Any()
@@ -41,10 +55,11 @@ object MonitorState {
         changed()
     }
 
-    fun beginSession(settings: ReceiveSettings, sessionId: String, startMs: Long, device: String, recording: String?) {
+    fun beginSession(settings: ReceiveSettings, sessionId: String?, startMs: Long, device: String, recording: String?) {
         synchronized(lock) {
             frames.clear()
             messages.clear()
+            rttyLive.clear()
         }
         this.settings = settings
         this.sessionId = sessionId

@@ -100,12 +100,12 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
             put("session_id", id)
             put("start_utc_ms", startUtcMs)
             put("state", "Active")
-            put("protocol", "JS8")
+            put("protocol", settings.mode.protocol)
             put("decoder_version", "js8core 0.1.0 / rx-core ${BuildConfigInfo.VERSION}")
             put("receiver_type", "RTL_SDR_V3")
             put("receiver_id", receiverId)
             put("dial_hz", settings.preset.dialHz)
-            put("sideband", "USB")
+            put("sideband", if (settings.preset.usb) "USB" else "LSB")
             put("tuning_verified", 1) // the app tunes the SDR itself
             put("settings", settings.describe())
         })
@@ -174,7 +174,7 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
     fun listSessions(limit: Int = 200): List<SessionSummary> =
         readableDatabase.rawQuery(
             """SELECT session_id, start_utc_ms, end_utc_ms, state, end_reason, dial_hz, receiver_id,
-                      frame_count, message_count, settings, clock_note, capture_notes
+                      frame_count, message_count, settings, clock_note, capture_notes, protocol
                FROM sessions ORDER BY start_utc_ms DESC LIMIT $limit""",
             null,
         ).use { c ->
@@ -185,6 +185,7 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
                         state = c.getString(3), endReason = c.getString(4), dialHz = c.getLong(5),
                         receiverId = c.getString(6) ?: "", frames = c.getInt(7), messages = c.getInt(8),
                         settings = c.getString(9) ?: "", clockNote = c.getString(10), notes = c.getString(11),
+                        protocol = c.getString(12) ?: "JS8",
                     ),
                 )
             }
@@ -254,13 +255,13 @@ class SessionDatabase(context: Context) : SQLiteOpenHelper(context, "ghostnet_mo
 
 /** Version string recorded with each session (kept in code so it needs no generated BuildConfig). */
 object BuildConfigInfo {
-    const val VERSION = "0.3-m1"
+    const val VERSION = "0.4"
 }
 
 data class SessionSummary(
     val id: String, val startUtcMs: Long, val endUtcMs: Long?, val state: String, val endReason: String?,
     val dialHz: Long, val receiverId: String, val frames: Int, val messages: Int, val settings: String,
-    val clockNote: String?, val notes: String?,
+    val clockNote: String?, val notes: String?, val protocol: String = "JS8",
 )
 
 data class FrameRecord(

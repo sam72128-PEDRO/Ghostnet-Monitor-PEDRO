@@ -48,6 +48,7 @@ add_library(ghostnet_rx_core STATIC
   src/file_iq_source.cpp
   src/test_signal.cpp
   src/spectrum.cpp
+  src/rtty.cpp
 )
 add_library(ghostnet::rx_core ALIAS ghostnet_rx_core)
 target_include_directories(ghostnet_rx_core PUBLIC include)
@@ -56,6 +57,10 @@ if(GHOSTNET_WITH_RTLSDR)
   target_sources(ghostnet_rx_core PRIVATE src/rtlsdr_source.cpp)
   target_link_libraries(ghostnet_rx_core PUBLIC ghostnet_rtlsdr)
 endif()
+
+# Signal generators for tests and host tools only; never linked into the app.
+add_library(ghostnet_rx_testsupport STATIC src/rtty_test_signal.cpp)
+target_link_libraries(ghostnet_rx_testsupport PUBLIC ghostnet::rx_core)
 
 # --- desktop tool -----------------------------------------------------------
 
@@ -75,8 +80,12 @@ if(BUILD_TESTING)
   target_link_libraries(ghostnet-rx-assembler-test PRIVATE ghostnet::rx_core)
   add_test(NAME ghostnet-rx-assembler COMMAND ghostnet-rx-assembler-test)
 
+  add_executable(ghostnet-rx-rtty-test tools/rtty_test.cpp)
+  target_link_libraries(ghostnet-rx-rtty-test PRIVATE ghostnet_rx_testsupport)
+  add_test(NAME ghostnet-rx-rtty COMMAND ghostnet-rx-rtty-test)
+
   add_executable(ghostnet-rx-end-to-end-test tools/end_to_end_test.cpp)
-  target_link_libraries(ghostnet-rx-end-to-end-test PRIVATE ghostnet::rx_core)
+  target_link_libraries(ghostnet-rx-end-to-end-test PRIVATE ghostnet_rx_testsupport)
   add_test(NAME ghostnet-rx-end-to-end COMMAND ghostnet-rx-end-to-end-test)
   set_tests_properties(ghostnet-rx-end-to-end PROPERTIES TIMEOUT 300)
 endif()

@@ -22,6 +22,15 @@ interface NativeListener {
 
     /** Waterfall row: dB per bin from 0 Hz above the dial, [binHz] wide each. About 12 rows/s. */
     fun onSpectrum(bins: FloatArray, binHz: Float)
+
+    /** Voice modes: 12 kHz mono PCM for live playback only. Never stored. */
+    fun onAudio(pcm: ShortArray)
+
+    /** RTTY: one decoded character ("~" = framing error) as it arrives. */
+    fun onRttyChar(text: String, framingError: Boolean)
+
+    /** RTTY: a completed line of text. */
+    fun onRttyLine(startMs: Long, endMs: Long, text: String, characters: Int, framingErrors: Int, centerHz: Double)
 }
 
 /**
@@ -38,9 +47,11 @@ class NativeReceiver : AutoCloseable {
     /** Returns an error message, or null once samples are flowing into the decoder. */
     fun start(settings: ReceiveSettings, recordPath: String?, recordMaxBytes: Long, listener: NativeListener): String? =
         nativeStart(
-            handle, settings.preset.dialHz, settings.sampleRateHz, settings.captureOffsetHz, true,
+            handle, settings.preset.dialHz, settings.sampleRateHz, settings.captureOffsetHz, settings.preset.usb,
             settings.invertSpectrum, settings.ppm, settings.rtlAgc, settings.directSampling,
-            settings.submodeMask, recordPath, recordMaxBytes, settings.verboseLog, listener,
+            settings.submodeMask, if (settings.mode.digital) recordPath else null, recordMaxBytes, settings.verboseLog,
+            settings.mode.nativeId, 0.0, settings.rttyShiftHz.toDouble(), settings.rttyReverse, settings.fmSquelch,
+            listener,
         )
 
     /** Blocks until stopped; half-received messages arrive via onMessage before it returns. */
@@ -76,6 +87,13 @@ class NativeReceiver : AutoCloseable {
         val spectrumPeakDb: Double,
         val recording: Boolean,
         val recordedBytes: Long,
+        val squelchOpen: Boolean = false,
+        val fmNoise: Double = 1.0,
+        val rttyLocked: Boolean = false,
+        val rttyCenterHz: Double = 0.0,
+        val rttyQuality: Double = 0.0,
+        val rttyCharacters: Long = 0,
+        val rttyFramingErrors: Long = 0,
     ) {
         companion object {
             // Layout must match nativeStats() in ghostnet_jni.cpp.
@@ -98,6 +116,13 @@ class NativeReceiver : AutoCloseable {
                 spectrumPeakDb = a[15],
                 recording = a[16] != 0.0,
                 recordedBytes = a[17].toLong(),
+                squelchOpen = a[18] != 0.0,
+                fmNoise = a[19],
+                rttyLocked = a[20] != 0.0,
+                rttyCenterHz = a[21],
+                rttyQuality = a[22],
+                rttyCharacters = a[23].toLong(),
+                rttyFramingErrors = a[24].toLong(),
             )
         }
     }
@@ -151,7 +176,8 @@ class NativeReceiver : AutoCloseable {
         @JvmStatic private external fun nativeStart(
             handle: Long, dialHz: Int, sampleRateHz: Int, captureOffsetHz: Int, usb: Boolean,
             invertSpectrum: Boolean, ppm: Int, rtlAgc: Boolean, directSampling: Int, submodeMask: Int,
-            recordPath: String?, recordMaxBytes: Long, verboseLog: Boolean, listener: NativeListener,
+            recordPath: String?, recordMaxBytes: Long, verboseLog: Boolean, mode: Int, rttyCenterHz: Double,
+            rttyShiftHz: Double, rttyReverse: Boolean, fmSquelch: Boolean, listener: NativeListener,
         ): String?
         @JvmStatic private external fun nativeStop(handle: Long)
         @JvmStatic private external fun nativeDescribe(handle: Long): String

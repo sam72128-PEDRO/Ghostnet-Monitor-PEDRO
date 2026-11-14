@@ -44,6 +44,7 @@ class MonitorService : Service() {
     private var sessionId: String? = null
     private var settings: ReceiveSettings? = null
     private var recording: File? = null
+    private var player: AudioPlayer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var statsTask: ScheduledFuture<*>? = null
     private var lastNotifiedMessages = -1L
@@ -131,13 +132,18 @@ class MonitorService : Service() {
         MonitorState.setPhase(MonitorState.Phase.READY)
 
         val start = System.currentTimeMillis()
-        val id = db.startSession(s, "${dev.manufacturerName ?: ""} ${dev.productName ?: ""} ${dev.serialNumberOrEmpty()}".trim(), start)
+        // Digital modes get a session row; analog voice never creates one,
+        // and is never recorded or logged (spec sections 2.3 and 8.5).
+        val id = if (s.mode.digital) {
+            db.startSession(s, "${dev.manufacturerName ?: ""} ${dev.productName ?: ""} ${dev.serialNumberOrEmpty()}".trim(), start)
+        } else null
         sessionId = id
         settings = s
         receiver = rx
         connection = conn
         device = dev
-        recording = if (s.recordIq) Recordings.newFile(this, s.preset.dialHz) else null
+        recording = if (s.recordIq && s.mode.digital) Recordings.newFile(this, s.preset.dialHz) else null
+        player = if (!s.mode.digital) AudioPlayer(s.volume).also { MonitorState.volume = s.volume } else null
         Waterfall.clear()
 
         rx.start(s, recording?.path, s.recordMaxBytes, Listener(id))?.let { err ->
@@ -154,7 +160,8 @@ class MonitorService : Service() {
         lastNotifiedMessages = -1
         pollCount = 0
         statsTask = control.scheduleWithFixedDelay({ pollStats() }, 1, 1, TimeUnit.SECONDS)
-        DiagLog.i(TAG, "session $id receiving: $described" + (recording?.let { ", recording to ${it.name}" } ?: ""))
+        DiagLog.i(TAG, (if (id != null) "session $id" else "voice listening (not logged)") +
+            " receiving ${s.mode.label}: $described" + (recording?.let { ", recording to ${it.name}" } ?: ""))
     }
 
     private fun fail(message: String) {
@@ -183,6 +190,8 @@ class MonitorService : Service() {
         receiver = null
         connection = null
         device = null
+        player?.release()
+        player = null
         releaseWakeLock()
 
         val id = sessionId
@@ -213,7 +222,15 @@ class MonitorService : Service() {
         MonitorState.updateStats(s)
         if (s.messages != lastNotifiedMessages) {
             lastNotifiedMessages = s.messages
-            settings?.let { notify("${it.preset.label} · ${s.frames} frames, ${s.messages} messages") }
+            settings?.let {
+                notify(
+                    when (it.mode) {
+                        RxMode.JS8 -> "${it.preset.label} · ${s.frames} frames, ${s.messages} messages"
+                        RxMode.RTTY -> "${it.preset.label} · ${s.messages} lines"
+                        else -> "${it.preset.label} · listening (audio is not recorded)"
+                    },
+                )
+            }
         }
         // A periodic snapshot in the diagnostics log shows how things evolved
         // over a session, not just how it ended.
@@ -228,13 +245,14 @@ class MonitorService : Service() {
         }
     }
 
-    private inner class Listener(private val sessionId: String) : NativeListener {
+    private inner class Listener(private val sessionId: String?) : NativeListener {
+        private var appliedVolume = -1f
         override fun onFrame(
             utcMs: Long, submode: Int, offsetHz: Double, snrDb: Int, dtS: Float, flags: Int,
             kind: String, raw: String, text: String, from: String, to: String,
         ) {
             val f = FrameRecord(utcMs, System.currentTimeMillis(), submode, offsetHz, snrDb, dtS, flags, kind, raw, text, from, to)
-            dbWriter.execute { runCatching { db.addFrame(sessionId, f) }.onFailure { DiagLog.e(TAG, "frame write failed", it) } }
+            sessionId?.let { id -> dbWriter.execute { runCatching { db.addFrame(id, f) }.onFailure { DiagLog.e(TAG, "frame write failed", it) } } }
             MonitorState.addFrame(f)
             DiagLog.d(TAG, "frame %s %s %+.0f Hz %d dB dt%+.1f flags=%d %s [%s]".format(
                 java.time.Instant.ofEpochMilli(utcMs), submodeName(submode), offsetHz, snrDb, dtS, flags, kind, raw))
@@ -247,7 +265,7 @@ class MonitorService : Service() {
         ) {
             val m = MessageRecord(firstUtcMs, lastUtcMs, submode, offsetHz, snrMinDb, snrMaxDb, frameCount, complete,
                 missingStart, hasGap, timedOut, text, from, to, grid, rawFrames)
-            dbWriter.execute { runCatching { db.addMessage(sessionId, m) }.onFailure { DiagLog.e(TAG, "message write failed", it) } }
+            sessionId?.let { id -> dbWriter.execute { runCatching { db.addMessage(id, m) }.onFailure { DiagLog.e(TAG, "message write failed", it) } } }
             MonitorState.addMessage(m)
         }
 
@@ -258,6 +276,28 @@ class MonitorService : Service() {
         }
 
         override fun onSpectrum(bins: FloatArray, binHz: Float) = Waterfall.addRow(bins)
+
+        override fun onAudio(pcm: ShortArray) {
+            val p = player ?: return
+            val v = MonitorState.volume
+            if (v != appliedVolume) {
+                p.setVolume(v)
+                appliedVolume = v
+            }
+            p.write(pcm)
+        }
+
+        override fun onRttyChar(text: String, framingError: Boolean) = MonitorState.appendRtty(text)
+
+        override fun onRttyLine(startMs: Long, endMs: Long, text: String, characters: Int, framingErrors: Int, centerHz: Double) {
+            // Stored as a message: complete = no framing errors. '~' marks each
+            // character that had one; nothing is guessed or repaired.
+            val m = MessageRecord(startMs, endMs, 0, centerHz, 0, 0, characters, framingErrors == 0, false, false, false,
+                text, "", "", "", "")
+            sessionId?.let { id -> dbWriter.execute { runCatching { db.addMessage(id, m) }.onFailure { DiagLog.e(TAG, "RTTY line write failed", it) } } }
+            MonitorState.addMessage(m)
+            DiagLog.d(TAG, "RTTY line: $characters chars, $framingErrors framing errors, centre %.0f Hz".format(centerHz))
+        }
     }
 
     // ---- foreground / notification / wake lock ------------------------------

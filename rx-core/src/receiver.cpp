@@ -9,6 +9,7 @@
 #include <span>
 #include <thread>
 
+#include "ghostnet/rf/fm_demodulator.hpp"
 #include "ghostnet/rx/file_iq_source.hpp"
 #include "ghostnet/rx/spectrum.hpp"
 #include "js8core/engine.hpp"
@@ -69,8 +70,10 @@ struct Receiver::Impl {
   Impl(const ReceiverConfig& cfg, ReceiverCallbacks cbs)
       : config(cfg),
         callbacks(std::move(cbs)),
-        demod(make_demod_config(cfg)),
+        ssb(cfg.mode == ReceiveMode::kVoiceFm ? nullptr : std::make_unique<rf::SsbDemodulator>(make_demod_config(cfg))),
+        fm(cfg.mode == ReceiveMode::kVoiceFm ? std::make_unique<rf::FmDemodulator>(make_fm_config(cfg)) : nullptr),
         agc(kAudioRate),
+        voice_agc(kAudioRate, 6000.0, 0.5),
         spectrum(kAudioRate),
         assembler([this](const AssembledMessage& m) { pending_messages.push_back(m); }) {}
 
@@ -84,11 +87,24 @@ struct Receiver::Impl {
     return d;
   }
 
+  static rf::FmDemodulatorConfig make_fm_config(const ReceiverConfig& cfg) {
+    rf::FmDemodulatorConfig f;
+    f.input_sample_rate_hz = cfg.sample_rate_hz;
+    f.audio_sample_rate_hz = kAudioRate;
+    f.tune_offset_hz = -static_cast<double>(cfg.capture_offset_hz);
+    return f;
+  }
+
+  double latency_seconds() const { return ssb ? ssb->latency_seconds() : 0.0; }
+
   // ---- configuration / collaborators ----
   ReceiverConfig config;
   ReceiverCallbacks callbacks;
-  rf::SsbDemodulator demod;
+  std::unique_ptr<rf::SsbDemodulator> ssb;
+  std::unique_ptr<rf::FmDemodulator> fm;
   rf::SlowAgc agc;
+  rf::SlowAgc voice_agc;  // faster, for listening
+  std::unique_ptr<RttyDecoder> rtty;
   SpectrumAnalyzer spectrum;
   std::unique_ptr<js8core::Js8Engine> engine;
   IqSource* source = nullptr;
@@ -143,6 +159,26 @@ struct Receiver::Impl {
   }
 
   bool start(IqSource* src) {
+    if (config.mode == ReceiveMode::kJs8) {
+      if (!start_engine()) return false;
+    } else {
+      callbacks_active = true;
+    }
+    if (config.mode == ReceiveMode::kRtty) {
+      rtty = std::make_unique<RttyDecoder>(
+          config.rtty,
+          [this](const std::string& t, bool err) {
+            if (callbacks_active && callbacks.on_rtty_char) callbacks.on_rtty_char(t, err);
+          },
+          [this](const RttyLine& l) {
+            if (callbacks_active && callbacks.on_rtty_line) callbacks.on_rtty_line(l);
+          });
+    }
+    if (is_voice(config.mode)) config.record_path.clear();  // analog audio is never recorded
+    return start_pipeline(src);
+  }
+
+  bool start_engine() {
     js8core::EngineConfig ec;
     ec.sample_rate_hz = static_cast<int>(kAudioRate);
     ec.submodes = config.submode_mask;
@@ -172,7 +208,10 @@ struct Receiver::Impl {
       engine.reset();
       return false;
     }
+    return true;
+  }
 
+  bool start_pipeline(IqSource* src) {
     if (config.sample_clock_timestamps) {
       anchored = true;
       anchor_pairs = 0;
@@ -223,6 +262,7 @@ struct Receiver::Impl {
     queue_cv.notify_all();
     if (dsp_thread.joinable()) dsp_thread.join();
     close_recording("session stopped");
+    if (rtty) rtty->flush();
     if (engine) {
       engine->stop();
       engine.reset();
@@ -323,7 +363,8 @@ struct Receiver::Impl {
     power /= static_cast<double>(chunk.data.size());
 
     audio.clear();
-    demod.process_iq_u8(chunk.data.data(), pairs, &audio);
+    if (fm) fm->process_iq_u8(chunk.data.data(), pairs, &audio);
+    else ssb->process_iq_u8(chunk.data.data(), pairs, &audio);
     // Samples dropped before this chunk are replaced by the equivalent
     // stretch of silence, so the decoder's ring stays aligned to UTC. The
     // engine only realigns on jumps over 250 ms, so without this, repeated
@@ -336,7 +377,21 @@ struct Receiver::Impl {
       gap_carry_pairs %= decimation;
     }
     pcm.assign(pad, 0);
-    agc.process(audio.data(), audio.size(), &pcm);
+    bool squelch_open = true;
+    if (is_voice(config.mode)) {
+      if (fm && config.fm_squelch && fm->noise_ratio() > config.fm_squelch_threshold) {
+        squelch_open = false;
+        std::fill(audio.begin(), audio.end(), 0.0f);
+      }
+      voice_agc.process(audio.data(), audio.size(), &pcm);
+      if (callbacks_active && callbacks.on_audio && !pcm.empty()) callbacks.on_audio(pcm.data(), pcm.size());
+    } else {
+      agc.process(audio.data(), audio.size(), &pcm);
+    }
+    if (rtty) {
+      rtty->process(audio.data(), audio.size(),
+                    wall_ms(chunk_start_time - seconds(latency_seconds())));
+    }
     if (callbacks.on_spectrum) {
       spectrum.process(audio.data(), audio.size(), [this](const std::vector<float>& row, float bin_hz) {
         if (callbacks_active) callbacks.on_spectrum(row, bin_hz);
@@ -345,7 +400,7 @@ struct Receiver::Impl {
 
     if (!pcm.empty() && engine) {
       const auto captured_at =
-          chunk_start_time - seconds(demod.latency_seconds() + static_cast<double>(pad) / kAudioRate);
+          chunk_start_time - seconds(latency_seconds() + static_cast<double>(pad) / kAudioRate);
       js8core::AudioInputBuffer buffer{std::as_bytes(std::span<const std::int16_t>(pcm.data(), pcm.size())),
                                        js8core::AudioFormat{static_cast<int>(kAudioRate), 1,
                                                             js8core::SampleType::Int16},
@@ -363,9 +418,19 @@ struct Receiver::Impl {
       stats.iq_clip_percent = stats.iq_bytes == 0 ? clip : (1 - a) * stats.iq_clip_percent + a * clip;
       stats.iq_bytes += chunk.data.size();
       stats.audio_samples += pcm.size();
-      stats.audio_level_dbfs = agc.input_level_dbfs();
-      stats.agc_gain_db = 20.0 * std::log10(std::max(agc.gain(), 1e-12));
+      const rf::SlowAgc& active_agc = is_voice(config.mode) ? voice_agc : agc;
+      stats.audio_level_dbfs = active_agc.input_level_dbfs();
+      stats.agc_gain_db = 20.0 * std::log10(std::max(active_agc.gain(), 1e-12));
       stats.last_iq_unix_ms = wall_ms(chunk.arrival);
+      stats.squelch_open = squelch_open;
+      if (fm) stats.fm_noise = fm->noise_ratio();
+      if (rtty) {
+        stats.rtty_locked = rtty->locked();
+        stats.rtty_center_hz = rtty->center_hz();
+        stats.rtty_quality = rtty->quality();
+        stats.rtty_characters = rtty->characters();
+        stats.rtty_framing_errors = rtty->framing_errors();
+      }
     }
 
     const auto now = Steady::now();

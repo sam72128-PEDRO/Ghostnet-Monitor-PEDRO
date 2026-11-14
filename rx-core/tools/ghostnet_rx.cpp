@@ -72,6 +72,12 @@ void usage() {
       "  --speed X              replay speed (default 8)\n"
       "  --start-unix-ms MS     replay: UTC of the first sample (default from .meta)\n"
       "  --seconds N            stop after N seconds\n"
+      "  --mode js8|rtty|lsb|usb|fm\n"
+      "                         receive mode (default js8); lsb/usb/fm are live voice\n"
+      "  --audio-out FILE|-     voice modes: write 12 kHz s16le mono audio (e.g. pipe to\n"
+      "                         aplay -r 12000 -f S16_LE). Never stored by the app itself.\n"
+      "  --rtty-center HZ       RTTY audio centre (default: automatic)\n"
+      "  --rtty-reverse         RTTY mark/space reversed\n"
       "  --verbose              decoder log\n");
 }
 
@@ -129,6 +135,7 @@ int main(int argc, char** argv) {
   std::int64_t start_unix_ms = 0;
   double seconds = 0.0;
   bool list = false;
+  std::string audio_out;
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -161,6 +168,18 @@ int main(int argc, char** argv) {
     else if (a == "--start-unix-ms") start_unix_ms = std::stoll(next());
     else if (a == "--seconds") seconds = std::stod(next());
     else if (a == "--verbose") cfg.verbose_engine_log = true;
+    else if (a == "--mode") {
+      const auto m = next();
+      if (m == "js8") cfg.mode = ReceiveMode::kJs8;
+      else if (m == "rtty") cfg.mode = ReceiveMode::kRtty;
+      else if (m == "lsb") { cfg.mode = ReceiveMode::kVoiceSsb; cfg.sideband = ghostnet::rf::Sideband::kLsb; }
+      else if (m == "usb") { cfg.mode = ReceiveMode::kVoiceSsb; cfg.sideband = ghostnet::rf::Sideband::kUsb; }
+      else if (m == "fm") cfg.mode = ReceiveMode::kVoiceFm;
+      else { std::fprintf(stderr, "unknown mode %s\n", m.c_str()); return 2; }
+    }
+    else if (a == "--audio-out") audio_out = next();
+    else if (a == "--rtty-center") cfg.rtty.center_hz = std::stod(next());
+    else if (a == "--rtty-reverse") cfg.rtty.reverse = true;
     else if (a == "--help" || a == "-h") { usage(); return 0; }
     else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return 2; }
   }
@@ -207,8 +226,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "configure failed: %s\n", error.c_str());
       return 1;
     }
-    std::printf("device: %s\n", rtlsdr->description().c_str());
-    std::printf("tuned:  centre %u Hz, %u S/s, direct sampling %d (0 off, 1 I, 2 Q), RTL AGC %s, ppm %d\n",
+    std::fprintf(stderr, "device: %s\n", rtlsdr->description().c_str());
+    std::fprintf(stderr, "tuned:  centre %u Hz, %u S/s, direct sampling %d (0 off, 1 I, 2 Q), RTL AGC %s, ppm %d\n",
                 rtlsdr->actual_center_hz(), rtlsdr->actual_sample_rate_hz(), rtlsdr->direct_sampling_mode(),
                 rtl.rtl_agc ? "on" : "off", rtl.ppm);
     source = rtlsdr.get();
@@ -226,11 +245,28 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::printf("dial:   %u Hz %s, listening for JS8 (Normal/Fast/Turbo/Slow)%s\n\n", cfg.dial_hz,
-              cfg.sideband == ghostnet::rf::Sideband::kUsb ? "USB" : "LSB",
-              cfg.invert_spectrum ? ", spectrum inverted" : "");
+  const char* mode_name = cfg.mode == ReceiveMode::kJs8 ? "JS8" : cfg.mode == ReceiveMode::kRtty ? "RTTY 45.45 baud"
+                          : cfg.mode == ReceiveMode::kVoiceFm ? "FM voice" : "SSB voice";
+  std::fprintf(stderr, "dial:   %u Hz %s, mode %s%s\n\n", cfg.dial_hz,
+               cfg.mode == ReceiveMode::kVoiceFm ? "FM" : cfg.sideband == ghostnet::rf::Sideband::kUsb ? "USB" : "LSB",
+               mode_name, cfg.invert_spectrum ? ", spectrum inverted" : "");
 
   ReceiverCallbacks cb;
+  std::FILE* audio_file = nullptr;
+  if (!audio_out.empty()) audio_file = audio_out == "-" ? stdout : std::fopen(audio_out.c_str(), "wb");
+  if (audio_file) {
+    cb.on_audio = [audio_file](const std::int16_t* p, std::size_t n) { std::fwrite(p, 2, n, audio_file); };
+  }
+  cb.on_rtty_char = [](const std::string& t, bool) {
+    std::lock_guard<std::mutex> l(g_print);
+    std::fputs(t.c_str(), stderr);
+  };
+  cb.on_rtty_line = [](const RttyLine& line) {
+    std::lock_guard<std::mutex> l(g_print);
+    std::printf("\n>>> %s RTTY %.0f Hz (%d chars, %d framing errors): %s\n", utc_hms(line.start_ms).c_str(),
+                line.center_hz, line.characters, line.framing_errors, line.text.c_str());
+    std::fflush(stdout);
+  };
   cb.on_frame = [](const FrameEvent& f) {
     std::lock_guard<std::mutex> l(g_print);
     std::printf("%s %-6s %+5.0f Hz %+3d dB dt%+.1f  %s%s  %-24s  [%s]\n", utc_hms(f.utc_ms).c_str(),
@@ -285,7 +321,7 @@ int main(int argc, char** argv) {
       last_status = now;
       const auto s = rx.stats();
       std::lock_guard<std::mutex> l(g_print);
-      std::printf("[status] IQ %.1f dBFS clip %.2f%% | channel %.1f dBFS AGC %+.0f dB | passes %llu frames %llu "
+      std::fprintf(stderr, "[status] IQ %.1f dBFS clip %.2f%% | channel %.1f dBFS AGC %+.0f dB | passes %llu frames %llu "
                   "msgs %llu | dt %+.2f s (%d) | dropped %llu B\n",
                   s.iq_level_dbfs, s.iq_clip_percent, s.audio_level_dbfs, s.agc_gain_db,
                   static_cast<unsigned long long>(s.decode_passes), static_cast<unsigned long long>(s.frames_decoded),
@@ -301,7 +337,7 @@ int main(int argc, char** argv) {
     file_watch.join();
   }
   const auto s = rx.stats();
-  std::printf("\nsummary: %llu frames, %llu messages, %llu IQ bytes, %llu dropped\n",
+  std::fprintf(stderr, "\nsummary: %llu frames, %llu messages, %llu IQ bytes, %llu dropped\n",
               static_cast<unsigned long long>(s.frames_decoded), static_cast<unsigned long long>(s.messages),
               static_cast<unsigned long long>(s.iq_bytes), static_cast<unsigned long long>(s.iq_bytes_dropped));
   return 0;
