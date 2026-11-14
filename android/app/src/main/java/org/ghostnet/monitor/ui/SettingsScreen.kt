@@ -192,8 +192,10 @@ fun SettingsScreen(controller: AppController) {
         SectionCard("About") {
             Text("GhostNet Monitor ${BuildConfigInfo.VERSION}. Receive-only: no transmission, keying, replies or network access. " +
                 "Schedule and frequencies from S2 Underground, ${GhostNetPlan.SOURCE}.", style = MaterialTheme.typography.bodySmall)
-            Text("Receives via RTL-SDR: JS8, RTTY, LSB voice and VHF/UHF FM voice (none yet verified on this hardware). " +
-                "Coming Soon: 2G ALE, DigiRig input, VARA/Winlink, DMR, GhostMesh.",
+            Text("Receives via RTL-SDR: JS8, RTTY, 2G ALE, LSB voice and VHF/UHF FM voice (none yet verified on this hardware). " +
+                "Coming Soon: DigiRig input, VARA/Winlink, DMR, GhostMesh.",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Free software under the GNU GPL, version 2 or later, with no warranty. Source code: the project's GitHub repository.",
                 style = MaterialTheme.typography.bodySmall)
             Text("Open-source components: js8core (MIT) · rtl-sdr-blog librtlsdr (GPL-2.0, locally patched for Android) · " +
                 "libusb (LGPL-2.1) · Eigen (MPL-2.0) · CRCpp (BSD-3-Clause) · Jetpack Compose and AndroidX (Apache-2.0). " +
