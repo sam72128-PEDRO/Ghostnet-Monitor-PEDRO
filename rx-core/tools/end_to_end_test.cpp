@@ -22,6 +22,8 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <map>
 #include <mutex>
 #include <random>
 #include <cmath>
@@ -389,6 +391,165 @@ void voice_through_receiver() {
   if (f) std::fclose(f);
 }
 
+// A simulated dongle for scanning tests: every channel has its own audio-
+// frequency track running on a shared clock (stations keep transmitting
+// while the receiver is elsewhere). Retunes take effect one USB buffer late,
+// as on hardware, and data is delivered at `speed` x real time.
+class ScanTestSource : public IqSource {
+ public:
+  ScanTestSource(std::map<std::uint32_t, std::vector<float>> tracks, std::uint32_t center, double seconds, double speed)
+      : tracks_(std::move(tracks)), center_(center), seconds_(seconds), speed_(speed) {}
+  ~ScanTestSource() override { stop(); }
+
+  bool start(DataFn on_data, ErrorFn) override {
+    running_ = true;
+    thread_ = std::thread([this, on_data] {
+      std::mt19937 rng(21);
+      std::normal_distribution<double> n(0.0, 3.0);
+      const std::size_t block = 8192;  // IQ pairs per buffer
+      const auto total = static_cast<std::size_t>(seconds_ * kFs);
+      std::vector<std::uint8_t> buf(2 * block);
+      double phase = 0.0;
+      std::uint32_t center = center_;
+      const auto t0 = std::chrono::steady_clock::now();
+      for (std::size_t s0 = 0; s0 < total && running_; s0 += block) {
+        const std::uint32_t requested = center_.load();
+        for (std::size_t i = 0; i < block; ++i) {
+          const std::size_t s = s0 + i;
+          float f = 0.0f;
+          auto it = tracks_.find(center - 25000);
+          if (it != tracks_.end() && s / 20 < it->second.size()) f = it->second[s / 20];
+          phase = std::remainder(phase + kTwoPi * (f - 25000.0) / kFs, kTwoPi);
+          const double a = f != 0.0f ? 3.0 : 0.0;
+          buf[2 * i] = static_cast<std::uint8_t>(std::clamp(std::lround(127.5 + a * std::cos(phase) + n(rng)), 0L, 255L));
+          buf[2 * i + 1] = static_cast<std::uint8_t>(std::clamp(std::lround(127.5 + a * std::sin(phase) + n(rng)), 0L, 255L));
+        }
+        center = requested;  // a retune lands one buffer late
+        on_data(buf.data(), buf.size());
+        std::this_thread::sleep_until(t0 + std::chrono::duration<double>((s0 + block) / kFs / speed_));
+      }
+      done_ = true;
+    });
+    return true;
+  }
+  void stop() override {
+    running_ = false;
+    if (thread_.joinable()) thread_.join();
+  }
+  bool retune(std::uint32_t center_hz) override {
+    center_ = center_hz;
+    ++retunes_;
+    return true;
+  }
+  std::string description() const override { return "scan test source"; }
+  bool done() const { return done_; }
+  int retunes() const { return retunes_; }
+
+ private:
+  std::map<std::uint32_t, std::vector<float>> tracks_;
+  std::atomic<std::uint32_t> center_;
+  double seconds_, speed_;
+  std::atomic<bool> running_{false}, done_{false};
+  std::atomic<int> retunes_{0};
+  std::thread thread_;
+};
+
+// ALE words as a 12 kHz audio-frequency track (0 = silence), starting at t0.
+void put_ale(std::vector<float>& track, double t0, const std::vector<std::uint32_t>& words) {
+  std::size_t i = static_cast<std::size_t>(t0 * 12000.0);
+  for (auto w : words) {
+    for (auto tone : ale::word_symbols(w)) {
+      for (int k = 0; k < 96; ++k, ++i) {
+        if (i >= track.size()) return;
+        track[i] = static_cast<float>(ale::kFirstToneHz + ale::kToneStepHz * tone);
+      }
+    }
+  }
+}
+
+void ale_scanning_through_receiver() {
+  std::printf("\n== 2G ALE scanning through the full receiver (simulated dongle with retune) ==\n");
+  const double secs = 32.0;
+  const std::vector<std::uint32_t> channels = {3598500, 7104500, 10128500, 14111500};
+  std::map<std::uint32_t, std::vector<float>> tracks;
+  for (auto c : channels) tracks[c].assign(static_cast<std::size_t>(secs * 12000.0), 0.0f);
+
+  // 10.1285 MHz: a scanning sounding (TWS KX4ABC, 12 repeats ~9.4 s) at t=2 s.
+  std::vector<std::uint32_t> snd;
+  for (int i = 0; i < 12; ++i) {
+    auto w = ale::address_words(ale::kTws, "KX4ABC");
+    snd.insert(snd.end(), w.begin(), w.end());
+  }
+  put_ale(tracks[10128500], 2.0, snd);
+  // 7.1045 MHz: scanning call TO GHOSTNET (8 repeats) + AMD + TIS N0CALL at t=14 s.
+  std::vector<std::uint32_t> call;
+  for (int i = 0; i < 8; ++i) {
+    auto w = ale::address_words(ale::kTo, "GHOSTNET");
+    call.insert(call.end(), w.begin(), w.end());
+  }
+  auto lead = ale::address_words(ale::kTo, "GHOSTNET");
+  call.insert(call.end(), lead.begin(), lead.end());
+  call.push_back(ale::make_word(ale::kCmd, 'Q', 'R', 'V'));
+  auto tis = ale::address_words(ale::kTis, "N0CALL");
+  call.insert(call.end(), tis.begin(), tis.end());
+  put_ale(tracks[7104500], 14.0, call);
+
+  std::mutex m;
+  std::vector<ale::Transmission> tx;
+  std::vector<ale::Word> words;
+  ReceiverCallbacks cb;
+  cb.on_ale_word = [&](const ale::Word& w) {
+    std::lock_guard<std::mutex> g(m);
+    words.push_back(w);
+  };
+  cb.on_ale_transmission = [&](const ale::Transmission& t) {
+    std::lock_guard<std::mutex> g(m);
+    tx.push_back(t);
+  };
+  ReceiverConfig cfg;
+  cfg.mode = ReceiveMode::kAle;
+  cfg.ale.channels_hz = channels;
+  cfg.ale.dwell_ms = 1000;
+  cfg.ale.hold_ms = 4000;
+  cfg.sample_clock_timestamps = true;
+  cfg.replay_start_unix_ms = 1'700'000'000'000;
+  cfg.record_path = "ghostnet_ale_scan.cu8";
+  ReceiverConfig c0 = cfg;
+  c0.dial_hz = channels[0];
+  ScanTestSource src(tracks, capture_center_hz(c0), secs, replay_speed());
+  Receiver rx(cfg, cb);
+  rx.start(&src);
+  while (!src.done()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  rx.wait_idle();
+  const auto st = rx.stats();
+  rx.stop();
+
+  std::lock_guard<std::mutex> g(m);
+  for (const auto& t : tx) {
+    std::printf("     %.3f MHz +%5.1f s  %-10s %s (%d words)\n", t.channel_hz / 1e6,
+                (t.start_ms - cfg.replay_start_unix_ms) / 1000.0, ale::Transmission::kind_name(t.kind),
+                t.summary().c_str(), t.words);
+  }
+  std::printf("     %d retunes, %zu words\n", src.retunes(), words.size());
+  bool sounding = false, called = false, wrong_channel = false;
+  for (const auto& t : tx) {
+    if (t.kind == ale::Transmission::Kind::kSounding && t.from == "KX4ABC" && t.tws && t.channel_hz == 10128500)
+      sounding = true;
+    if (t.kind == ale::Transmission::Kind::kCall && t.from == "N0CALL" && t.channel_hz == 7104500 && !t.to.empty() &&
+        t.to[0] == "GHOSTNET" && t.amd == "QRV")
+      called = true;
+    if ((t.from == "KX4ABC" && t.channel_hz != 10128500) || (t.from == "N0CALL" && t.channel_hz != 7104500))
+      wrong_channel = true;
+  }
+  check(sounding, "scan stops on 10.1285 MHz and logs the TWS sounding from KX4ABC");
+  check(called, "scan stops on 7.1045 MHz and logs N0CALL calling GHOSTNET with AMD 'QRV'");
+  check(!wrong_channel, "every transmission is attributed to the channel it was on");
+  check(st.retunes >= 8 && st.retune_failures == 0, "receiver kept scanning between them (" + std::to_string(st.retunes) + " retunes)");
+  check(!st.recording && st.recorded_bytes == 0, "no IQ recording while scanning");
+  std::remove(cfg.record_path.c_str());
+  std::remove((cfg.record_path + ".meta").c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -403,6 +564,7 @@ int main() {
 
   rtty_through_receiver();
   voice_through_receiver();
+  ale_scanning_through_receiver();
 
   {
     std::printf("\n== embedded on-device self-test ==\n");
