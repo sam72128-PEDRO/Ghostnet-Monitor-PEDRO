@@ -47,6 +47,7 @@ add_library(ghostnet_rx_core STATIC
   src/receiver.cpp
   src/file_iq_source.cpp
   src/test_signal.cpp
+  src/spectrum.cpp
 )
 add_library(ghostnet::rx_core ALIAS ghostnet_rx_core)
 target_include_directories(ghostnet_rx_core PUBLIC include)

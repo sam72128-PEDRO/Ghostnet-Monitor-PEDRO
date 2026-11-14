@@ -16,7 +16,8 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
+import android.provider.Settings
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -24,8 +25,9 @@ import kotlin.math.abs
 
 /**
  * Owns one receive session end to end: the USB connection, the native
- * receiver, the wake lock, the database session row and the foreground
- * notification. Monitoring continues with the screen off.
+ * receiver, the wake lock, the database session row, the optional IQ
+ * recording and the foreground notification. Monitoring continues with the
+ * screen off. Every step is written to the diagnostics log.
  *
  * Receive-only. Nothing here writes to a radio: the RTL-SDR has no
  * transmitter and the native layer exposes no transmit path.
@@ -41,14 +43,17 @@ class MonitorService : Service() {
     private var device: UsbDevice? = null
     private var sessionId: String? = null
     private var settings: ReceiveSettings? = null
+    private var recording: File? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var statsTask: ScheduledFuture<*>? = null
     private var lastNotifiedMessages = -1L
+    private var pollCount = 0L
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
             val gone = intent.usbDevice() ?: return
+            DiagLog.w(TAG, "USB detached: ${RtlSdrDevices.describe(gone)} at ${gone.deviceName}")
             if (gone.deviceName == device?.deviceName) {
                 control.execute { stopSession("Interrupted", "device_removed", "USB receiver was disconnected") }
             }
@@ -64,13 +69,16 @@ class MonitorService : Service() {
         registerReceiver(detachReceiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED), RECEIVER_NOT_EXPORTED)
         dbWriter.execute {
             val recovered = db.recoverInterruptedSessions()
-            if (recovered > 0) Log.w(TAG, "marked $recovered unfinished session(s) Interrupted")
+            if (recovered > 0) DiagLog.w(TAG, "marked $recovered unfinished session(s) Interrupted (app ended mid-session)")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> control.execute { stopSession("Completed", "stop", null) }
+            ACTION_STOP -> {
+                DiagLog.i(TAG, "stop requested")
+                control.execute { stopSession("Completed", "stop", null) }
+            }
             ACTION_START -> {
                 // Must enter the foreground promptly after startForegroundService().
                 if (!enterForeground("Connecting to receiver…")) return START_NOT_STICKY
@@ -99,20 +107,26 @@ class MonitorService : Service() {
 
     private fun startSession(deviceName: String?, s: ReceiveSettings) {
         if (receiver != null) return
+        DiagLog.i(TAG, "start: ${s.describe()}")
+        if (Settings.Global.getInt(contentResolver, Settings.Global.AUTO_TIME, 1) == 0) {
+            DiagLog.w(TAG, "automatic date & time is OFF; JS8 needs the clock within about 1 s of UTC")
+        }
         MonitorState.setSettings(s)
         MonitorState.setPhase(MonitorState.Phase.CONNECTING)
 
         val usb = getSystemService(UsbManager::class.java)
+        DiagLog.i(TAG, "USB devices: " + usb.deviceList.values.joinToString { RtlSdrDevices.describe(it) }.ifEmpty { "none" })
         val dev = usb.deviceList.values.firstOrNull { it.deviceName == deviceName } ?: RtlSdrDevices.find(usb)
         if (dev == null) return fail("No RTL-SDR receiver connected")
-        if (!usb.hasPermission(dev)) return fail("USB permission for the receiver was not granted")
+        if (!usb.hasPermission(dev)) return fail("USB permission for ${RtlSdrDevices.describe(dev)} was not granted")
 
-        val conn = usb.openDevice(dev) ?: return fail("Android refused to open the USB receiver")
+        val conn = usb.openDevice(dev) ?: return fail("Android refused to open ${RtlSdrDevices.describe(dev)} (another app may be using it)")
+        DiagLog.i(TAG, "opened ${RtlSdrDevices.describe(dev)} fd=${conn.fileDescriptor}")
         val rx = NativeReceiver()
         rx.openFd(conn.fileDescriptor)?.let { err ->
             rx.close()
             conn.close()
-            return fail(err)
+            return fail("Receiver did not initialise: $err")
         }
         MonitorState.setPhase(MonitorState.Phase.READY)
 
@@ -123,24 +137,28 @@ class MonitorService : Service() {
         receiver = rx
         connection = conn
         device = dev
+        recording = if (s.recordIq) Recordings.newFile(this, s.preset.dialHz) else null
+        Waterfall.clear()
 
-        rx.start(s, Listener(id))?.let { err ->
+        rx.start(s, recording?.path, s.recordMaxBytes, Listener(id))?.let { err ->
+            DiagLog.e(TAG, "receiver start failed: $err")
             stopSession("Failed", "start_failed", err)
             MonitorState.setPhase(MonitorState.Phase.ERROR, err)
             return
         }
 
         val described = rx.describe()
-        MonitorState.beginSession(s, id, start, described)
+        MonitorState.beginSession(s, id, start, described, recording?.name)
         MonitorState.setPhase(MonitorState.Phase.RECEIVING)
         acquireWakeLock()
         lastNotifiedMessages = -1
+        pollCount = 0
         statsTask = control.scheduleWithFixedDelay({ pollStats() }, 1, 1, TimeUnit.SECONDS)
-        Log.i(TAG, "session $id receiving: $described")
+        DiagLog.i(TAG, "session $id receiving: $described" + (recording?.let { ", recording to ${it.name}" } ?: ""))
     }
 
     private fun fail(message: String) {
-        Log.w(TAG, message)
+        DiagLog.e(TAG, message)
         MonitorState.setPhase(MonitorState.Phase.ERROR, message)
         stopForegroundCompat()
         stopSelf()
@@ -174,8 +192,14 @@ class MonitorService : Service() {
         val notes = listOfNotNull(
             detail,
             finalStats?.let { "decode passes ${it.decodePasses}, IQ ${it.iqBytes} bytes, dropped ${it.droppedBytes} bytes" },
+            recording?.let { "IQ recording ${it.name} (${it.length()} bytes)" },
         ).joinToString("; ")
         if (id != null) dbWriter.execute { db.endSession(id, state, reason, end, clockNote, notes) }
+        DiagLog.log(
+            if (state == "Completed") DiagLog.Level.INFO else DiagLog.Level.WARN, TAG,
+            "session $id ended: $state ($reason)${detail?.let { " · $it" } ?: ""} · $notes" + (clockNote?.let { " · $it" } ?: ""),
+        )
+        recording = null
 
         val phase = if (state == "Completed") MonitorState.Phase.IDLE else MonitorState.Phase.ERROR
         MonitorState.setPhase(phase, if (state == "Completed") null else (detail ?: reason))
@@ -191,6 +215,17 @@ class MonitorService : Service() {
             lastNotifiedMessages = s.messages
             settings?.let { notify("${it.preset.label} · ${s.frames} frames, ${s.messages} messages") }
         }
+        // A periodic snapshot in the diagnostics log shows how things evolved
+        // over a session, not just how it ended.
+        if (pollCount++ % 30 == 0L) {
+            DiagLog.i(
+                TAG,
+                "stats: IQ %.1f dBFS clip %.2f%% · channel %.1f dBFS AGC %+.0f dB · passes %d frames %d msgs %d · dt %+.2f s (%d) · dropped %d B%s".format(
+                    s.iqLevelDbfs, s.clipPercent, s.channelLevelDbfs, s.agcGainDb, s.decodePasses, s.frames, s.messages,
+                    s.medianDtS, s.dtSamples, s.droppedBytes, if (s.recording) " · recording ${s.recordedBytes / 1_000_000} MB" else "",
+                ),
+            )
+        }
     }
 
     private inner class Listener(private val sessionId: String) : NativeListener {
@@ -199,8 +234,10 @@ class MonitorService : Service() {
             kind: String, raw: String, text: String, from: String, to: String,
         ) {
             val f = FrameRecord(utcMs, System.currentTimeMillis(), submode, offsetHz, snrDb, dtS, flags, kind, raw, text, from, to)
-            dbWriter.execute { runCatching { db.addFrame(sessionId, f) }.onFailure { Log.e(TAG, "frame write", it) } }
+            dbWriter.execute { runCatching { db.addFrame(sessionId, f) }.onFailure { DiagLog.e(TAG, "frame write failed", it) } }
             MonitorState.addFrame(f)
+            DiagLog.d(TAG, "frame %s %s %+.0f Hz %d dB dt%+.1f flags=%d %s [%s]".format(
+                java.time.Instant.ofEpochMilli(utcMs), submodeName(submode), offsetHz, snrDb, dtS, flags, kind, raw))
         }
 
         override fun onMessage(
@@ -210,14 +247,17 @@ class MonitorService : Service() {
         ) {
             val m = MessageRecord(firstUtcMs, lastUtcMs, submode, offsetHz, snrMinDb, snrMaxDb, frameCount, complete,
                 missingStart, hasGap, timedOut, text, from, to, grid, rawFrames)
-            dbWriter.execute { runCatching { db.addMessage(sessionId, m) }.onFailure { Log.e(TAG, "message write", it) } }
+            dbWriter.execute { runCatching { db.addMessage(sessionId, m) }.onFailure { DiagLog.e(TAG, "message write failed", it) } }
             MonitorState.addMessage(m)
         }
 
         override fun onSourceError(message: String) {
+            DiagLog.e(TAG, "source error: $message")
             // Called on the native USB thread: hand off, never stop from here.
             control.execute { stopSession("Interrupted", "source_error", message) }
         }
+
+        override fun onSpectrum(bins: FloatArray, binHz: Float) = Waterfall.addRow(bins)
     }
 
     // ---- foreground / notification / wake lock ------------------------------
@@ -231,7 +271,7 @@ class MonitorService : Service() {
         }
         true
     } catch (e: RuntimeException) {
-        Log.e(TAG, "cannot enter foreground", e)
+        DiagLog.e(TAG, "Android refused to start the foreground service", e)
         MonitorState.setPhase(MonitorState.Phase.ERROR, "Android refused to start background monitoring: ${e.message}")
         stopSelf()
         false
@@ -283,7 +323,7 @@ class MonitorService : Service() {
         const val EXTRA_DEVICE_NAME = "device_name"
         private const val CHANNEL = "ghostnet-monitor"
         private const val NOTIFICATION_ID = 7
-        private const val TAG = "GhostNetMonitor"
+        private const val TAG = "service"
 
         fun clockNote(s: NativeReceiver.Stats): String? = when {
             s.dtSamples < 3 -> null

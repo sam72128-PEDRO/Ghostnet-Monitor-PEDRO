@@ -21,6 +21,7 @@ object MonitorState {
     @Volatile var stats: NativeReceiver.Stats? = null; private set
     @Volatile var sessionId: String? = null; private set
     @Volatile var sessionStartMs: Long = 0; private set
+    @Volatile var recordingName: String? = null; private set
 
     private const val MAX_LINES = 500
     private val lock = Any()
@@ -40,7 +41,7 @@ object MonitorState {
         changed()
     }
 
-    fun beginSession(settings: ReceiveSettings, sessionId: String, startMs: Long, device: String) {
+    fun beginSession(settings: ReceiveSettings, sessionId: String, startMs: Long, device: String, recording: String?) {
         synchronized(lock) {
             frames.clear()
             messages.clear()
@@ -49,6 +50,7 @@ object MonitorState {
         this.sessionId = sessionId
         this.sessionStartMs = startMs
         this.deviceText = device
+        this.recordingName = recording
         this.stats = null
         changed()
     }

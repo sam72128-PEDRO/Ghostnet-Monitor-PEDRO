@@ -2,8 +2,10 @@ package org.ghostnet.monitor
 
 import android.content.Context
 
-/** GhostNet Version 1.5 JS8 dial frequencies (USB). */
-data class Preset(val id: String, val label: String, val dialHz: Int, val purpose: String)
+/** A dial frequency the receiver can tune (USB). */
+data class Preset(val id: String, val label: String, val dialHz: Int, val purpose: String) {
+    val isTest: Boolean get() = id.startsWith("test")
+}
 
 object Presets {
     val JS8 = listOf(
@@ -19,6 +21,8 @@ object Presets {
     )
 
     fun byId(id: String?): Preset = JS8.firstOrNull { it.id == id } ?: JS8[1]
+
+    fun forDial(hz: Long): Preset? = JS8.firstOrNull { !it.isTest && it.dialHz.toLong() == hz }
 }
 
 data class ReceiveSettings(
@@ -26,6 +30,11 @@ data class ReceiveSettings(
     val invertSpectrum: Boolean,
     val rtlAgc: Boolean,
     val ppm: Int,
+    /** Record raw IQ for the whole session (capped by [recordMaxMinutes]). */
+    val recordIq: Boolean = false,
+    val recordMaxMinutes: Int = 10,
+    /** Write the decoder's detailed internal log to diagnostics (large). */
+    val verboseLog: Boolean = false,
     /** -1 lets the RTL-SDR Blog driver pick (Q-branch direct sampling below 24 MHz). */
     val directSampling: Int = -1,
     val sampleRateHz: Int = 240_000,
@@ -34,11 +43,16 @@ data class ReceiveSettings(
     /** js8core SubmodeId bits: Normal, Fast, Turbo, Slow. */
     val submodeMask: Int = 0b01111,
 ) {
+    /** 240 kS/s x 2 bytes. */
+    val recordMaxBytes: Long get() = recordMaxMinutes * 60L * sampleRateHz * 2
+
     fun describe(): String = buildString {
         append(preset.label)
         append(", ppm ").append(ppm)
         append(", RTL AGC ").append(if (rtlAgc) "on" else "off")
         if (invertSpectrum) append(", spectrum inverted")
+        if (recordIq) append(", recording IQ (max ").append(recordMaxMinutes).append(" min)")
+        if (verboseLog) append(", verbose decoder log")
     }
 
     companion object {
@@ -51,6 +65,9 @@ data class ReceiveSettings(
                 invertSpectrum = p.getBoolean("invert", false),
                 rtlAgc = p.getBoolean("rtl_agc", true),
                 ppm = p.getInt("ppm", 0),
+                recordIq = p.getBoolean("record_iq", false),
+                recordMaxMinutes = p.getInt("record_max_minutes", 10),
+                verboseLog = p.getBoolean("verbose_log", false),
             )
         }
 
@@ -60,7 +77,24 @@ data class ReceiveSettings(
                 .putBoolean("invert", s.invertSpectrum)
                 .putBoolean("rtl_agc", s.rtlAgc)
                 .putInt("ppm", s.ppm)
+                .putBoolean("record_iq", s.recordIq)
+                .putInt("record_max_minutes", s.recordMaxMinutes)
+                .putBoolean("verbose_log", s.verboseLog)
                 .apply()
         }
     }
+}
+
+/** App-level preferences that are not receive parameters. */
+object AppPrefs {
+    private const val PREFS = "app_prefs"
+
+    /** 0 = keep sessions forever. */
+    fun retentionDays(c: Context): Int = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("retention_days", 0)
+    fun setRetentionDays(c: Context, days: Int) =
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("retention_days", days).apply()
+
+    fun groupsOnly(c: Context): Boolean = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("groups_only", false)
+    fun setGroupsOnly(c: Context, v: Boolean) =
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("groups_only", v).apply()
 }

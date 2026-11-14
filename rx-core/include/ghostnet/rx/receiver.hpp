@@ -42,6 +42,13 @@ struct ReceiverConfig {
   std::int64_t replay_start_unix_ms = 0;
 
   bool verbose_engine_log = false;
+
+  // Raw IQ recording: when non-empty, every IQ byte handed to the
+  // demodulator is also written here (dropped spans as neutral samples, so
+  // replay timing stays exact), with "<path>.meta" alongside. Recording
+  // stops on its own after record_max_bytes (0 = no limit).
+  std::string record_path;
+  std::uint64_t record_max_bytes = 0;
 };
 
 std::uint32_t capture_center_hz(const ReceiverConfig& config);
@@ -64,6 +71,8 @@ struct ReceiverStats {
   int dt_samples = 0;
   std::int64_t last_iq_unix_ms = 0;
   std::int64_t last_frame_unix_ms = 0;
+  bool recording = false;
+  std::uint64_t recorded_bytes = 0;
 };
 
 struct ReceiverCallbacks {
@@ -71,7 +80,8 @@ struct ReceiverCallbacks {
   std::function<void(const AssembledMessage&)> on_message;    // assembled / closed messages
   std::function<void(const std::string&)> on_source_error;    // device lost, read failure
   std::function<void(const std::string&)> on_log;
-  std::function<void(const std::vector<float>& bins, float bin_hz)> on_spectrum;  // ~2 Hz
+  // Waterfall rows (dB, 0-3 kHz above the dial, 10 Hz bins), ~12 per second.
+  std::function<void(const std::vector<float>& bins, float bin_hz)> on_spectrum;
 };
 
 // RTL-SDR IQ -> SSB demod -> AGC -> js8core decoder -> frames -> messages.

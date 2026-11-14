@@ -63,11 +63,15 @@ jobs:
         run: |
           perms=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump permissions app/build/outputs/apk/debug/app-debug.apk | grep uses-permission | sort)
           echo "$perms"
+          # DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION is an app-private,
+          # signature-level permission added by androidx.core so its internal
+          # broadcast receivers stay private. It grants no capability.
           expected=$(printf '%s\n' \
             "uses-permission: name='android.permission.FOREGROUND_SERVICE'" \
             "uses-permission: name='android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'" \
             "uses-permission: name='android.permission.POST_NOTIFICATIONS'" \
-            "uses-permission: name='android.permission.WAKE_LOCK'" | sort)
+            "uses-permission: name='android.permission.WAKE_LOCK'" \
+            "uses-permission: name='org.ghostnet.monitor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'" | sort)
           if [ "$perms" != "$expected" ]; then
             echo "::error::APK permissions changed. INTERNET, RECORD_AUDIO and similar must not be added."
             exit 1
