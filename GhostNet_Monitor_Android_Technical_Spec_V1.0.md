@@ -215,7 +215,7 @@ Normalize each receiver to an internal stream carrying sample rate, format, tune
 
 ## 4.1 JS8 — initial target
 
-Backend: integrate and adapt JS8Call-improved/Android-port, including its shared C++ core, Android adapter, JNI bridge, and foreground decoding lifecycle. The upstream app supports TX: the GhostNet Monitor build must exclude or hard-disable transmit paths at every layer, not merely hide a button. A GPLv3 source-distribution compliance review is required.
+Backend: js8core, an independent MIT-licensed C++20 implementation of the JS8 modem and decoder (vendored in `third_party/js8core`), wrapped by the first-party `rx-core` receive pipeline and an Android JNI bridge. *(Revised 2026-11-14: the original baseline named the GPLv3 JS8Call-improved/Android-port. That port was evaluated in Phase 0 and is not used.)* js8core's engine still contains transmit code, so the GhostNet Monitor build must keep transmit paths unreachable at every layer, not merely hide a button. In the current implementation the engine is created with no audio output, rig control or network dependency, no transmit method is called, and the JNI surface has no transmit entry point. The decoder carries no GPL obligation; the RTL-SDR driver (rtl-sdr-blog, GPLv2) does. See section 9.5.
 
 - GhostNet dial presets: 3.575, 7.107 and 14.107 MHz (USB). The GhostNet 7.107/14.107 presets are not silently replaced by standard JS8Call defaults.
 
@@ -820,7 +820,7 @@ Bundle the GhostNet V1.5 plan in a versioned local data file. Each scheduled ent
 
 ## 9.5 Native dependencies, licenses and provenance
 
-Keep source-attribution metadata for each integrated decoder, upstream commit/tag, local patches, build instructions, and test recordings. JS8Call Android is GPLv3; fldigi/Nexus RTTY receive code has GPL obligations; PC-ALE is MIT. License compatibility and redistribution obligations must be assessed before distributing the APK. Vendor transmit-enabled upstream packages only after disabling/removing their TX paths.
+Keep source-attribution metadata for each integrated decoder, upstream commit/tag, local patches, build instructions, and test recordings (maintained in `THIRD_PARTY.md`). Current V1 stack: js8core (JS8 decoder) is MIT; rtl-sdr-blog (RTL-SDR driver, locally patched for Android file-descriptor access) is GPLv2; libusb is LGPL-2.1; both are statically linked into the native library, so distributing the APK under GPLv2-compatible terms with source is the expected path. Future modes: fldigi/Nexus RTTY receive code has GPL obligations; PC-ALE is MIT. License compatibility and redistribution obligations must be assessed before distributing the APK. Vendor transmit-enabled upstream packages only after disabling/removing their TX paths.
 
 # 10. Receive-only safety, permissions, and resilience
 
@@ -927,7 +927,7 @@ Full V1 acceptance targets all four initial modes on RTL-SDR V3, DigiRig Mobile,
 
 ## 12.1 Issues requiring engineering verification
 
-- JS8Call Android-port exact upstream version, Android target SDK, ABI, JNI interface, receive-only compile patches and tests.
+- js8core pinned upstream commit (vendored snapshot currently unpinned; see `THIRD_PARTY.md`), and on-device validation of the receive-only JNI integration.
 
 - RTL-SDR V3 USB backend and reliable 28.1085 MHz ALE reception around the direct-sampling/tuner boundary.
 
@@ -947,9 +947,9 @@ S2 Underground, GhostNet Version 1.5, 50-page booklet. Relevant source pages: 12
 
 ## 12.3 Third-party integration references
 
-**JS8Call Android port (GPLv3):** https://github.com/JS8Call-improved/Android-port
+**js8core, JS8 modem/decoder (MIT), used for V1:** https://github.com/punk-kaos/js8core
 
-**JS8Call Android releases / testing:** https://github.com/JS8Call-improved/Android-port/releases
+**JS8Call Android port (GPLv3), evaluated in Phase 0, not used:** https://github.com/JS8Call-improved/Android-port
 
 **fldigi decoder (GPLv3):** https://github.com/w1hkj/fldigi
 
