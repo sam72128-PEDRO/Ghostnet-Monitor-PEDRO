@@ -69,6 +69,13 @@ RTLSDR_API int rtlsdr_get_index_by_serial(const char *serial);
 
 RTLSDR_API int rtlsdr_open(rtlsdr_dev_t **dev, uint32_t index);
 
+/*!
+ * GhostNet Monitor local patch (not upstream): open a device from an OS
+ * handle (on Android, the UsbDeviceConnection file descriptor) without
+ * device enumeration. See librtlsdr.c for ownership rules.
+ */
+RTLSDR_API int rtlsdr_open_sys_dev(rtlsdr_dev_t **dev, intptr_t sys_dev);
+
 RTLSDR_API int rtlsdr_close(rtlsdr_dev_t *dev);
 
 /* configuration functions */

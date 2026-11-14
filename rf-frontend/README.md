@@ -1,61 +1,53 @@
 # rf-frontend
 
-First-party DSP for GhostNet Monitor's RTL-SDR receive path (PHASE1_PLAN.md,
-work stream 3). Portable C++20, no Android/USB/RTL2832U dependency — it
-takes a stream of real-valued samples and produces demodulated SSB audio
-at a fixed output rate. Host-buildable and host-tested; that's deliberate,
-matching PHASE0_FINDINGS.md's own recommended order: validate the DSP
-against a generated fixture before it ever touches real RF.
+First-party DSP for GhostNet Monitor's RTL-SDR receive path. Portable
+C++20, no Android/USB dependency, host-buildable and host-tested.
 
-## What's implemented and verified here
+## Signal path
 
-- `SsbDemodulator`: complex-mix down by a tuned offset, band-limit and
-  decimate to a fixed audio rate, then separate the wanted sideband from
-  its image with a phasing-method Hilbert combine
-  (`audio = I - H{Q}` for USB, `I + H{Q}` for LSB).
-- `tools/image_rejection_test.cpp`: generates a wanted-side tone and an
-  equal-strength image-side tone (same offset, opposite side of the tuned
-  reference) and asserts the image is suppressed by at least 20 dB.
-  Current implementation measures ~83 dB with 129/127-tap filters. This
-  caught a real bug during development — an earlier version applied the
-  Hilbert transform before the mix instead of after, which measured 0 dB
-  rejection (silently passing both sidebands). Keep this test; don't trust
-  a refactor of this module that doesn't keep passing it.
-- `tools/passband_test.cpp`: confirms the configured passband edge
-  actually limits bandwidth (an out-of-band tone well past the edge, but
-  still within the decimated output's Nyquist, is attenuated ~59 dB
-  relative to an in-band tone).
+RTL2832U output is interleaved unsigned 8-bit I/Q. That holds in Q-branch
+direct sampling too: the ADC samples the HF input as a real signal, but the
+chip's internal digital downconverter mixes it to complex baseband before
+it reaches USB. (An earlier version of this README said direct sampling
+delivers real samples. That was wrong.)
 
-Build and run:
+```
+u8 IQ @ 240 kS/s
+  -> optional conjugate (invert_spectrum)
+  -> complex mix by tune_offset_hz (dial - capture centre)
+  -> stage 1: decimating low-pass, /5  -> 48 kS/s
+  -> stage 2: decimating low-pass, /4  -> 12 kS/s, 2.8 kHz channel
+  -> phasing-method sideband select: USB = I - H{Q}, LSB = I + H{Q}
+  -> SlowAgc -> int16 PCM @ 12 kHz (js8core's input contract)
+```
+
+The decimating filters compute only the samples they keep. The dongle is
+tuned 25 kHz away from the dial so its DC/LO artefact lands outside the
+channel.
+
+## Tests (synthetic fixtures, run with ctest)
+
+| Test | Checks | Current result |
+|---|---|---|
+| `iq_path_test` | Real hardware path: u8 IQ at 240 kS/s with noise. Opposite-sideband rejection, strong out-of-channel signal, capture-centre DC, invert switch, AGC level, throughput | 63 dB / 139 dB / 97 dB / 92 dB / ~4200 RMS / ~100x real time on host |
+| `image_rejection_test` | Sideband selection with a real-valued input, USB and LSB | ~83 dB |
+| `passband_test` | Channel filter edge | ~59 dB |
+
+`image_rejection_test` caught a real bug during development. The Hilbert
+transform had been applied before the mix, which measured 0 dB rejection.
+Don't merge a change to this module that stops it passing.
 
 ```bash
 cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-## What this does NOT prove
+## Not proven here
 
-This is a synthetic-signal, host-only test of the demodulation math. It
-says nothing about:
-
-- Whether RTL2832U Q-branch direct sampling actually produces a sample
-  stream shaped the way this module assumes (real-valued, single ADC
-  channel, known sample rate).
-- What sample rates are actually sustainable over USB on the SM-T733.
-- Real-world antialiasing, ADC nonlinearity, DC offset, or front-end gain
-  behavior.
-- Anything about the RTL2832U/R820T2 register sequence needed to put the
-  dongle into that mode — that's `third_party/rtl-sdr-blog`'s job, and
-  it isn't wired to this module yet.
-
-See PHASE1_PLAN.md work stream 3 for what's still required before this
-can be trusted with a live antenna.
-
-## Integer decimation assumption
-
-`SsbDemodulatorConfig::input_sample_rate_hz` must be an exact integer
-multiple of `audio_sample_rate_hz` (constructor throws otherwise). Real
-RTL-SDR capture rates won't necessarily satisfy that for a fixed 12 kHz
-output — either pick a capture rate that does, or add a resampling stage
-upstream. That choice is deliberately left as a TODO rather than silently
-assumed away.
+- Whether Q-branch direct sampling on a real V3 delivers an inverted
+  spectrum. If JS8 never decodes on a known-good signal, try
+  `invert_spectrum` first.
+- Real-world front-end behaviour: overload, ADC nonlinearity, and noise
+  from the tablet or USB hub.
+- Sustained throughput on the SM-T733 (host runs about 100x real time;
+  the tablet should still have a wide margin, but that hasn't been measured).

@@ -33,4 +33,8 @@ if(BUILD_TESTING)
   add_executable(ghostnet-rf-passband-test tools/passband_test.cpp)
   target_link_libraries(ghostnet-rf-passband-test PRIVATE ghostnet::rf_frontend)
   add_test(NAME ghostnet-rf-passband COMMAND ghostnet-rf-passband-test)
+
+  add_executable(ghostnet-rf-iq-path-test tools/iq_path_test.cpp)
+  target_link_libraries(ghostnet-rf-iq-path-test PRIVATE ghostnet::rf_frontend)
+  add_test(NAME ghostnet-rf-iq-path COMMAND ghostnet-rf-iq-path-test)
 endif()

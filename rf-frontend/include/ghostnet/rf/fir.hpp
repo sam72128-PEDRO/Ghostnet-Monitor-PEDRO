@@ -2,55 +2,56 @@
 
 #include <complex>
 #include <cstddef>
-#include <deque>
 #include <vector>
 
 namespace ghostnet::rf {
 
-// Windowed-sinc low-pass FIR design (Hamming window). `taps` should be odd.
+// Windowed-sinc low-pass FIR design (Hamming window). `taps` must be odd.
 // Unity gain at DC.
-std::vector<double> design_lowpass_fir(std::size_t taps, double cutoff_hz, double sample_rate_hz);
+std::vector<float> design_lowpass_fir(std::size_t taps, double cutoff_hz, double sample_rate_hz);
 
 // Windowed FIR approximation of an ideal discrete Hilbert transformer
-// (90-degree broadband phase shifter). `taps` must be odd; the center
-// coefficient is zero. Used to build an analytic (single-sideband) signal
-// from a real-valued ADC stream, which is required before mixing to
-// baseband if the receiver must distinguish the two sides of the tuned
-// frequency (true SSB selectivity) rather than just band-limiting a
-// double-sideband product.
-std::vector<double> design_hilbert_fir(std::size_t taps);
+// (broadband 90-degree phase shifter). `taps` must be odd; even-lag
+// coefficients, including the center, are zero.
+std::vector<float> design_hilbert_fir(std::size_t taps);
 
-// Real-coefficient FIR applied to a complex sample stream (same
-// coefficients applied independently to the real and imaginary parts).
-// Keeps its own history so it can be fed one sample at a time across
-// calls (streaming-correct, no block-boundary artifacts).
-class ComplexFir {
- public:
-  explicit ComplexFir(std::vector<double> coefficients);
-
-  std::complex<double> process(std::complex<double> sample);
-
- private:
-  std::vector<double> coefficients_;
-  std::deque<std::complex<double>> history_;
-};
-
-// Real-coefficient FIR applied to a real sample stream, used to build the
-// Hilbert ("imaginary") branch from raw ADC samples.
+// Real-coefficient FIR on a real stream, one sample in / one sample out.
 class RealFir {
  public:
-  explicit RealFir(std::vector<double> coefficients);
+  explicit RealFir(std::vector<float> coefficients);
 
-  double process(double sample);
+  float process(float sample);
 
-  // Group delay in samples: (taps - 1) / 2. The caller must delay the
-  // untouched real branch by this many samples to keep it time-aligned
-  // with this filter's output.
-  std::size_t group_delay() const { return (coefficients_.size() - 1) / 2; }
+  // (taps - 1) / 2: how far a parallel untouched branch must be delayed to
+  // stay time-aligned with this filter's output.
+  std::size_t group_delay() const { return (taps_.size() - 1) / 2; }
 
  private:
-  std::vector<double> coefficients_;
-  std::deque<double> history_;
+  std::vector<float> taps_;
+  std::vector<float> history_;  // 2x length so the window is always contiguous
+  std::size_t pos_ = 0;
+};
+
+// Real-coefficient FIR on a complex stream with integrated decimation: the
+// dot product is only evaluated for samples that are kept, so the cost is
+// taps * output_rate rather than taps * input_rate.
+class DecimatingComplexFir {
+ public:
+  DecimatingComplexFir(std::vector<float> coefficients, std::size_t decimation);
+
+  // Returns true and writes *out when this input completes an output sample.
+  bool push(std::complex<float> sample, std::complex<float>* out);
+
+  std::size_t decimation() const { return decimation_; }
+  std::size_t taps() const { return taps_.size(); }
+
+ private:
+  std::vector<float> taps_;
+  std::vector<float> re_;  // 2x length history, real parts
+  std::vector<float> im_;  // 2x length history, imaginary parts
+  std::size_t pos_ = 0;
+  std::size_t decimation_;
+  std::size_t phase_ = 0;
 };
 
 }  // namespace ghostnet::rf

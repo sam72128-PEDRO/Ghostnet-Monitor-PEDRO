@@ -1,7 +1,9 @@
 #pragma once
 
+#include <complex>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include "ghostnet/rf/fir.hpp"
@@ -12,85 +14,108 @@ namespace ghostnet::rf {
 enum class Sideband { kUsb, kLsb };
 
 struct SsbDemodulatorConfig {
-  // Sample rate of the incoming real-valued samples (e.g. from RTL2832U
-  // Q-branch direct sampling). Must be an integer multiple of
-  // audio_sample_rate_hz; this is a simplification, not a hardware fact —
-  // real capture rates must be chosen (or resampled) to satisfy it.
-  double input_sample_rate_hz = 48000.0;
+  // Rate of the samples handed to process_*(). For RTL2832U capture this is
+  // the dongle sample rate (default pipeline: 240 kS/s). Must be an integer
+  // multiple of audio_sample_rate_hz.
+  double input_sample_rate_hz = 240000.0;
 
-  // Output audio rate. js8core's documented receive contract is 12 kHz
-  // mono (see third_party/js8core include/js8core/decoder_state.hpp,
-  // kJs8RxSampleRate); other decoders may need a different rate, so this
-  // is a parameter, not a hardcoded constant.
+  // Output rate. js8core's receive contract is 12 kHz mono.
   double audio_sample_rate_hz = 12000.0;
 
-  // Tuned offset, in Hz, of the desired passband's suppressed-carrier
-  // reference relative to the input stream's zero frequency. For a real
-  // RTL-SDR capture this corresponds to (dial_frequency - capture_center_
-  // frequency); computing that mapping from an actual tuned RTL2832U
-  // configuration is integration work the demodulator itself does not do.
+  // Where the dial (suppressed-carrier) frequency sits relative to the
+  // centre of the input stream: dial_hz - capture_center_hz. Tuning the
+  // dongle a little away from the dial keeps the RTL2832U's DC/LO artefact
+  // out of the audio passband.
   double tune_offset_hz = 0.0;
 
   Sideband sideband = Sideband::kUsb;
 
-  // Audio passband edge, Hz, relative to the suppressed-carrier reference.
-  // JS8's default sub-band is roughly 200-2500 Hz (see GhostNetMonitor
-  // phase0 JNI defaults); pick something that comfortably covers that with
-  // a little margin, and leave the low edge at the sideband's own skirt
-  // (we filter only on the high side here; see note in ssb_demodulator.cpp
-  // on why the Hilbert branch already suppresses true DC/near-DC leakage
-  // from the opposite sideband rather than needing a separate high-pass).
+  // Conjugate the input (swap the meaning of +f / -f) before anything else.
+  // Exposed because whether RTL2832U Q-branch direct sampling delivers an
+  // inverted spectrum has not been verified on hardware yet; if JS8 never
+  // decodes on a known-good signal, this is the first switch to flip.
+  bool invert_spectrum = false;
+
+  // Upper audio edge relative to the dial. JS8's normal sub-band is about
+  // 200-2500 Hz above the dial.
   double passband_high_hz = 2800.0;
 
-  // FIR tap counts. Odd numbers. Larger = sharper skirts / better image
-  // rejection, at the cost of more per-sample work and more group delay.
-  // These are host-validated against the synthetic fixture in
-  // tools/image_rejection_test.cpp, not against real RF; they are a
-  // starting point for hardware tuning, not a final answer.
-  std::size_t hilbert_taps = 129;
+  // Final channel filter taps (at 4x the audio rate when two-stage
+  // decimation is used, otherwise at the input rate).
   std::size_t lowpass_taps = 127;
+
+  // Hilbert transformer taps, applied at the audio rate.
+  std::size_t hilbert_taps = 129;
 };
 
-// Converts a stream of real-valued samples (as produced by RTL2832U
-// Q-branch direct sampling, or any other real single-ADC-channel receiver
-// front end) into demodulated single-sideband audio at a fixed output
-// rate.
+// Single-sideband receiver back end: input stream (complex IQ, or real
+// samples from a single-ADC front end) -> demodulated audio at a fixed rate.
 //
-// This class implements the DSP only. It has no knowledge of USB, the
-// RTL2832U register set, or Android — see WS3 in PHASE1_PLAN.md for how it
-// is meant to be wired into the actual capture path. Validate it against
-// the synthetic fixture in tools/image_rejection_test.cpp before trusting
-// it with a live antenna.
+// Signal path: optional conjugate -> complex mix by tune_offset_hz -> one or
+// two decimating low-pass stages -> phasing-method sideband selection
+// (USB = I - H{Q}, LSB = I + H{Q}) at the audio rate.
+//
+// The low-pass stages have real coefficients, so their magnitude response
+// is symmetric about 0 Hz: they band-limit but cannot reject the opposite
+// sideband. Sideband rejection comes only from the final Hilbert combine.
+// An earlier version applied the Hilbert transform before the mix and
+// measured 0 dB image rejection; tools/image_rejection_test.cpp exists to
+// keep that from coming back.
 class SsbDemodulator {
  public:
   explicit SsbDemodulator(SsbDemodulatorConfig config);
 
-  // Feeds `count` real input samples and appends any audio samples that
-  // became available (decimation means not every call produces output).
-  void process(const std::int16_t* samples, std::size_t count, std::vector<float>* audio_out);
+  // RTL2832U wire format: interleaved unsigned 8-bit I,Q pairs, 127.5 = 0.
+  void process_iq_u8(const std::uint8_t* iq, std::size_t pairs, std::vector<float>* audio_out);
+
+  void process_complex(const std::complex<float>* samples, std::size_t count, std::vector<float>* audio_out);
+
+  // Real samples (e.g. a single-ADC front end or a synthetic fixture).
+  void process_real_i16(const std::int16_t* samples, std::size_t count, std::vector<float>* audio_out);
+
+  const SsbDemodulatorConfig& config() const { return config_; }
+
+  // Total delay, in output samples, from an input sample to its effect on
+  // the audio. Used to back-date audio timestamps for JS8 slot alignment.
+  double latency_seconds() const;
 
  private:
-  // Order of operations, and why: complex-mix the raw real samples down
-  // to baseband first, then band-limit with an ordinary (sideband-
-  // agnostic) complex low-pass and decimate — this stage only needs to
-  // reject what's far from the tuned reference, which a real-coefficient
-  // filter does fine (its magnitude response is necessarily symmetric
-  // around 0 Hz, since real coefficients make H(-f) = conj(H(f)); that
-  // symmetry means it *cannot* tell +f apart from -f, i.e. it cannot by
-  // itself separate the wanted sideband from the image). Sideband
-  // separation happens afterwards, on the decimated I/Q pair, via the
-  // classic phasing-method combine: Hilbert-transform one branch and
-  // add/subtract from the delay-matched other branch. Doing the Hilbert
-  // step before the mix (an earlier version of this file did that) does
-  // not work: see tools/image_rejection_test.cpp, which caught it at 0 dB
-  // rejection.
+  void push(std::complex<float> sample, std::vector<float>* audio_out);
+
   SsbDemodulatorConfig config_;
-  ComplexFir lowpass_fir_;
-  RealFir hilbert_fir_;
   Nco nco_;
-  std::deque<double> i_delay_line_;
-  std::size_t decimation_factor_;
-  std::size_t decimation_counter_ = 0;
+  std::unique_ptr<DecimatingComplexFir> stage1_;  // null when single-stage
+  DecimatingComplexFir stage2_;
+  RealFir hilbert_;
+  std::vector<float> i_delay_;
+  std::size_t i_delay_pos_ = 0;
+};
+
+// Slow automatic gain control for feeding a decoder that wants int16 PCM.
+// Tracks the mean-square level with a long time constant and steers it to a
+// fixed target, so weak-signal audio is not lost to int16 quantisation and
+// strong signals do not clip. Deliberately slow (seconds) so it does not
+// pump within a JS8 transmission.
+class SlowAgc {
+ public:
+  explicit SlowAgc(double sample_rate_hz, double target_rms = 3000.0, double time_constant_s = 2.0,
+                   double max_gain = 1.0e6);
+
+  // Applies gain in place and writes clamped int16 samples to `out`.
+  void process(const float* in, std::size_t count, std::vector<std::int16_t>* out);
+
+  // Pre-gain input level in dBFS (relative to a full-scale sine of 1.0),
+  // useful as a "signal present" indicator.
+  double input_level_dbfs() const;
+  double gain() const { return gain_; }
+
+ private:
+  double alpha_;
+  double target_rms_;
+  double max_gain_;
+  double mean_square_ = 0.0;
+  double gain_ = 1.0;
+  bool primed_ = false;
 };
 
 }  // namespace ghostnet::rf

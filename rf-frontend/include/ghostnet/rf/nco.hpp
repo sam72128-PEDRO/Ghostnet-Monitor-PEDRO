@@ -1,26 +1,28 @@
 #pragma once
 
 #include <complex>
+#include <cstdint>
 
 namespace ghostnet::rf {
 
-// Numerically controlled oscillator used to mix a tuned RF offset down to
-// (or up from) baseband. next() returns one complex local-oscillator
-// sample per call at e^{-j*phase}, matching the down-mixing convention
-// used by SsbDemodulator (multiply the input sample by this value to
-// shift `frequency_hz` down to 0 Hz).
+// Numerically controlled oscillator for mixing a tuned offset down to 0 Hz.
+// next() returns e^{-j*2*pi*f*n/fs}; multiply an input sample by it to shift
+// `frequency_hz` to baseband. Uses a rotating phasor (one complex multiply
+// per sample, no trig) and renormalizes periodically so amplitude error
+// cannot accumulate over long sessions.
 class Nco {
  public:
   explicit Nco(double sample_rate_hz);
 
   void set_frequency_hz(double frequency_hz);
 
-  std::complex<double> next();
+  std::complex<float> next();
 
  private:
   double sample_rate_hz_;
-  double phase_ = 0.0;
-  double phase_increment_ = 0.0;
+  std::complex<double> phasor_{1.0, 0.0};
+  std::complex<double> step_{1.0, 0.0};
+  std::uint32_t since_normalize_ = 0;
 };
 
 }  // namespace ghostnet::rf
