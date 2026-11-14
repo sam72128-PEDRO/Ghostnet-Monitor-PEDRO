@@ -24,6 +24,14 @@ class IqSource {
   virtual bool start(DataFn on_data, ErrorFn on_error) = 0;
   virtual void stop() = 0;
 
+  // Retune while streaming (scanning). Returns false if unsupported or the
+  // device refused. Data after a successful return is from the new
+  // frequency, apart from what was already in flight in USB buffers.
+  virtual bool retune(std::uint32_t center_hz) {
+    (void)center_hz;
+    return false;
+  }
+
   virtual std::string description() const = 0;
 };
 

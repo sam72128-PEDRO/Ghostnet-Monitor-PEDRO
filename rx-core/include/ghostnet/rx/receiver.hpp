@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ghostnet/rf/ssb_demodulator.hpp"
+#include "ghostnet/rx/ale.hpp"
 #include "ghostnet/rx/iq_source.hpp"
 #include "ghostnet/rx/message_assembler.hpp"
 #include "ghostnet/rx/rtty.hpp"
@@ -19,6 +20,7 @@ enum class ReceiveMode {
   kRtty,      // digital: 45.45 baud RTTY decoder, text lines
   kVoiceSsb,  // analog: live SSB audio (LSB for the 7.190 MHz fallback)
   kVoiceFm,   // analog: live narrowband FM audio (VHF/UHF)
+  kAle,       // digital: 2G ALE (MIL-STD-188-141) words, calls and soundings; optional scanning
 };
 
 inline bool is_voice(ReceiveMode m) { return m == ReceiveMode::kVoiceSsb || m == ReceiveMode::kVoiceFm; }
@@ -57,6 +59,17 @@ struct ReceiverConfig {
 
   // RTTY options (mode kRtty).
   RttyConfig rtty;
+
+  // 2G ALE (mode kAle). With more than one channel the receiver scans:
+  // it dwells on each channel (USB dial frequencies), stops on any decoded
+  // word, and resumes hold_ms after the last word heard. dial_hz is ignored
+  // when channels is non-empty. Raw IQ recording is off while scanning (a
+  // recording has one frequency).
+  struct AleConfig {
+    std::vector<std::uint32_t> channels_hz;
+    int dwell_ms = 1000;
+    int hold_ms = 4000;
+  } ale;
 
   // Voice (modes kVoiceSsb / kVoiceFm). Squelch applies to FM only: audio is
   // muted while the noise metric is above the threshold.
@@ -103,6 +116,17 @@ struct ReceiverStats {
   float rtty_quality = 0.0f;
   std::uint64_t rtty_characters = 0;
   std::uint64_t rtty_framing_errors = 0;
+  // ALE
+  std::uint32_t ale_channel_hz = 0;  // dial frequency being listened to
+  int ale_channel_index = 0;
+  bool ale_scanning = false;         // more than one channel configured
+  bool ale_holding = false;          // stopped on activity
+  bool ale_sync = false;
+  float ale_quality = 0.0f;
+  std::uint64_t ale_words = 0;
+  std::uint64_t ale_transmissions = 0;
+  std::uint64_t retunes = 0;
+  std::uint64_t retune_failures = 0;
 };
 
 struct ReceiverCallbacks {
@@ -116,6 +140,10 @@ struct ReceiverCallbacks {
   // RTTY: each decoded character as it arrives, and each completed line.
   std::function<void(const std::string& text, bool framing_error)> on_rtty_char;
   std::function<void(const RttyLine& line)> on_rtty_line;
+  // ALE: every decoded word (with its channel), and each assembled
+  // transmission (sounding, call) when it ends.
+  std::function<void(const ale::Word&)> on_ale_word;
+  std::function<void(const ale::Transmission&)> on_ale_transmission;
   // Waterfall rows (dB, 0-3 kHz above the dial, 10 Hz bins), ~12 per second.
   std::function<void(const std::vector<float>& bins, float bin_hz)> on_spectrum;
 };

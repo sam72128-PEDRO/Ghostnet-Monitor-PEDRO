@@ -49,6 +49,7 @@ add_library(ghostnet_rx_core STATIC
   src/test_signal.cpp
   src/spectrum.cpp
   src/rtty.cpp
+  src/ale.cpp
 )
 add_library(ghostnet::rx_core ALIAS ghostnet_rx_core)
 target_include_directories(ghostnet_rx_core PUBLIC include)
@@ -79,6 +80,10 @@ if(BUILD_TESTING)
   add_executable(ghostnet-rx-assembler-test tools/assembler_test.cpp)
   target_link_libraries(ghostnet-rx-assembler-test PRIVATE ghostnet::rx_core)
   add_test(NAME ghostnet-rx-assembler COMMAND ghostnet-rx-assembler-test)
+
+  add_executable(ghostnet-rx-ale-test tools/ale_test.cpp)
+  target_link_libraries(ghostnet-rx-ale-test PRIVATE ghostnet::rx_core)
+  add_test(NAME ghostnet-rx-ale COMMAND ghostnet-rx-ale-test)
 
   add_executable(ghostnet-rx-rtty-test tools/rtty_test.cpp)
   target_link_libraries(ghostnet-rx-rtty-test PRIVATE ghostnet_rx_testsupport)

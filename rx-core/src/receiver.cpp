@@ -65,6 +65,7 @@ struct Receiver::Impl {
     std::vector<std::uint8_t> data;
     Steady::time_point arrival;
     std::uint64_t gap_pairs = 0;  // pairs dropped immediately before this chunk
+    std::uint64_t tune_gen = 0;   // retune generation the source was at when this arrived
   };
 
   Impl(const ReceiverConfig& cfg, ReceiverCallbacks cbs)
@@ -105,6 +106,8 @@ struct Receiver::Impl {
   rf::SlowAgc agc;
   rf::SlowAgc voice_agc;  // faster, for listening
   std::unique_ptr<RttyDecoder> rtty;
+  std::unique_ptr<ale::Demodulator> ale_demod;
+  std::unique_ptr<ale::Assembler> ale_asm;
   SpectrumAnalyzer spectrum;
   std::unique_ptr<js8core::Js8Engine> engine;
   IqSource* source = nullptr;
@@ -116,6 +119,7 @@ struct Receiver::Impl {
   std::deque<Chunk> queue;
   std::size_t queue_bytes = 0;
   std::uint64_t pending_gap_pairs = 0;
+  std::uint64_t tune_gen = 0;  // guarded by queue_mutex
   bool stopping = false;
   bool busy = false;
   std::thread dsp_thread;
@@ -132,6 +136,16 @@ struct Receiver::Impl {
   std::FILE* record_file = nullptr;
   bool record_meta_written = false;
   std::uint64_t recorded_bytes = 0;
+  // ALE scanning (DSP thread). Audio after a retune is blanked for a while:
+  // USB buffers already in flight still hold the old channel.
+  std::uint64_t dsp_tune_gen = 0;
+  bool awaiting_retune = false;
+  std::size_t channel_index = 0;
+  std::uint32_t channel_dial_hz = 0;
+  std::int64_t channel_audio_samples = 0;
+  std::int64_t blank_samples = 0;
+  std::int64_t audio_ms_now = 0;
+  std::int64_t last_ale_word_ms = 0;
 
   // ---- shared ----
   std::atomic<std::int64_t> latest_audio_wall_ms{0};
@@ -175,6 +189,33 @@ struct Receiver::Impl {
           });
     }
     if (is_voice(config.mode)) config.record_path.clear();  // analog audio is never recorded
+    if (config.mode == ReceiveMode::kAle) {
+      if (config.ale.channels_hz.empty()) config.ale.channels_hz.push_back(config.dial_hz);
+      config.dial_hz = config.ale.channels_hz.front();
+      channel_dial_hz = config.dial_hz;
+      if (config.ale.channels_hz.size() > 1 && !config.record_path.empty()) {
+        log("IQ recording is off while scanning ALE channels (a recording holds one frequency)");
+        config.record_path.clear();
+      }
+      ale_asm = std::make_unique<ale::Assembler>([this](const ale::Transmission& t) {
+        {
+          std::lock_guard<std::mutex> lock(stats_mutex);
+          ++stats.ale_transmissions;
+        }
+        if (callbacks_active && callbacks.on_ale_transmission) callbacks.on_ale_transmission(t);
+      });
+      ale_demod = std::make_unique<ale::Demodulator>(
+          [this](const ale::Word& w) {
+            last_ale_word_ms = w.time_ms;
+            ale_asm->add(w);
+            if (callbacks_active && callbacks.on_ale_word) callbacks.on_ale_word(w);
+          },
+          kAudioRate);
+      ale_demod->set_channel(channel_dial_hz);
+      std::lock_guard<std::mutex> lock(stats_mutex);
+      stats.ale_channel_hz = channel_dial_hz;
+      stats.ale_scanning = config.ale.channels_hz.size() > 1;
+    }
     return start_pipeline(src);
   }
 
@@ -223,6 +264,8 @@ struct Receiver::Impl {
       std::lock_guard<std::mutex> lock(stats_mutex);
       stats = ReceiverStats{};
       stats.running = true;
+      stats.ale_channel_hz = channel_dial_hz;
+      stats.ale_scanning = config.ale.channels_hz.size() > 1;
     }
     if (!config.record_path.empty()) {
       record_file = std::fopen(config.record_path.c_str(), "wb");
@@ -263,6 +306,8 @@ struct Receiver::Impl {
     if (dsp_thread.joinable()) dsp_thread.join();
     close_recording("session stopped");
     if (rtty) rtty->flush();
+    if (ale_demod) ale_demod->flush();
+    if (ale_asm) ale_asm->flush();
     if (engine) {
       engine->stop();
       engine.reset();
@@ -294,6 +339,7 @@ struct Receiver::Impl {
       c.data.assign(data, data + bytes);
       c.arrival = arrival;
       c.gap_pairs = pending_gap_pairs;
+      c.tune_gen = tune_gen;
       pending_gap_pairs = 0;
       queue_bytes += bytes;
       queue.push_back(std::move(c));
@@ -392,6 +438,7 @@ struct Receiver::Impl {
       rtty->process(audio.data(), audio.size(),
                     wall_ms(chunk_start_time - seconds(latency_seconds())));
     }
+    if (ale_demod) process_ale(chunk, chunk_start_time);
     if (callbacks.on_spectrum) {
       spectrum.process(audio.data(), audio.size(), [this](const std::vector<float>& row, float bin_hz) {
         if (callbacks_active) callbacks.on_spectrum(row, bin_hz);
@@ -424,6 +471,13 @@ struct Receiver::Impl {
       stats.last_iq_unix_ms = wall_ms(chunk.arrival);
       stats.squelch_open = squelch_open;
       if (fm) stats.fm_noise = fm->noise_ratio();
+      if (ale_demod) {
+        stats.ale_sync = ale_demod->in_sync();
+        stats.ale_quality = ale_demod->tone_quality();
+        stats.ale_words = ale_demod->words();
+        stats.ale_channel_hz = channel_dial_hz;
+        stats.ale_channel_index = static_cast<int>(channel_index);
+      }
       if (rtty) {
         stats.rtty_locked = rtty->locked();
         stats.rtty_center_hz = rtty->center_hz();
@@ -443,6 +497,65 @@ struct Receiver::Impl {
       }
       deliver_pending();
     }
+  }
+
+  void process_ale(const Chunk& chunk, Steady::time_point chunk_start_time) {
+    if (chunk.tune_gen != dsp_tune_gen) {
+      // First data tagged after a retune: the new channel starts here.
+      dsp_tune_gen = chunk.tune_gen;
+      awaiting_retune = false;
+      ale_demod->reset();
+      ale_demod->set_channel(channel_dial_hz);
+      channel_audio_samples = 0;
+      blank_samples = static_cast<std::int64_t>(0.15 * kAudioRate);
+    }
+    const std::int64_t start_ms = wall_ms(chunk_start_time - seconds(latency_seconds()));
+    if (blank_samples > 0) {
+      const auto n = static_cast<std::size_t>(std::min<std::int64_t>(blank_samples, static_cast<std::int64_t>(audio.size())));
+      std::fill(audio.begin(), audio.begin() + static_cast<std::ptrdiff_t>(n), 0.0f);
+      blank_samples -= static_cast<std::int64_t>(n);
+    }
+    ale_demod->process(audio.data(), audio.size(), start_ms);
+    channel_audio_samples += static_cast<std::int64_t>(audio.size());
+    audio_ms_now = start_ms + static_cast<std::int64_t>(audio.size() * 1000.0 / kAudioRate);
+    ale_asm->tick(audio_ms_now);
+
+    const auto& channels = config.ale.channels_hz;
+    if (channels.size() < 2 || awaiting_retune || !source) return;
+    const bool holding = ale_demod->in_sync() || ale_asm->active() ||
+                         (last_ale_word_ms > 0 && audio_ms_now - last_ale_word_ms < config.ale.hold_ms);
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex);
+      stats.ale_holding = holding;
+    }
+    if (holding || channel_audio_samples * 1000 < static_cast<std::int64_t>(config.ale.dwell_ms) * static_cast<std::int64_t>(kAudioRate))
+      return;
+    retune_to((channel_index + 1) % channels.size());
+  }
+
+  // DSP thread. The source is retuned without holding the queue lock: the
+  // USB thread may be inside push() waiting for that lock, and librtlsdr's
+  // control transfers can need that thread's libusb event handling.
+  void retune_to(std::size_t index) {
+    const std::uint32_t dial = config.ale.channels_hz[index];
+    ReceiverConfig c = config;
+    c.dial_hz = dial;
+    const bool ok = source->retune(capture_center_hz(c));
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex);
+      ++stats.retunes;
+      if (!ok) ++stats.retune_failures;
+    }
+    if (!ok) {
+      log("retune to " + std::to_string(dial) + " Hz failed; staying on " + std::to_string(channel_dial_hz) + " Hz");
+      channel_audio_samples = 0;  // try again after another dwell
+      return;
+    }
+    channel_index = index;
+    channel_dial_hz = dial;
+    awaiting_retune = true;
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    ++tune_gen;
   }
 
   void record_chunk(const Chunk& chunk, Steady::time_point chunk_start_time) {

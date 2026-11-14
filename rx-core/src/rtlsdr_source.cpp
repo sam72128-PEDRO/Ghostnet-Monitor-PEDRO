@@ -132,6 +132,13 @@ void RtlSdrSource::stop() {
   }
 }
 
+bool RtlSdrSource::retune(std::uint32_t center_hz) {
+  // The rtl-sdr-blog driver switches between direct sampling (below 24 MHz)
+  // and the tuner by itself inside set_center_freq.
+  settings_.center_hz = center_hz;
+  return rtlsdr_set_center_freq(dev_, center_hz) == 0;
+}
+
 int RtlSdrSource::direct_sampling_mode() const { return rtlsdr_get_direct_sampling(dev_); }
 std::uint32_t RtlSdrSource::actual_center_hz() const { return rtlsdr_get_center_freq(dev_); }
 std::uint32_t RtlSdrSource::actual_sample_rate_hz() const { return rtlsdr_get_sample_rate(dev_); }

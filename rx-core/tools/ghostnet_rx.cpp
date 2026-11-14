@@ -72,12 +72,15 @@ void usage() {
       "  --speed X              replay speed (default 8)\n"
       "  --start-unix-ms MS     replay: UTC of the first sample (default from .meta)\n"
       "  --seconds N            stop after N seconds\n"
-      "  --mode js8|rtty|lsb|usb|fm\n"
+      "  --mode js8|rtty|lsb|usb|fm|ale\n"
       "                         receive mode (default js8); lsb/usb/fm are live voice\n"
       "  --audio-out FILE|-     voice modes: write 12 kHz s16le mono audio (e.g. pipe to\n"
       "                         aplay -r 12000 -f S16_LE). Never stored by the app itself.\n"
       "  --rtty-center HZ       RTTY audio centre (default: automatic)\n"
       "  --rtty-reverse         RTTY mark/space reversed\n"
+      "  --ale-channels LIST    ALE: comma-separated dial Hz to scan, or 'ghostnet' for the\n"
+      "                         GhostNet V1.5 10-channel list (default: --freq only)\n"
+      "  --ale-dwell MS         ALE scan dwell per channel (default 1000)\n"
       "  --verbose              decoder log\n");
 }
 
@@ -175,11 +178,29 @@ int main(int argc, char** argv) {
       else if (m == "lsb") { cfg.mode = ReceiveMode::kVoiceSsb; cfg.sideband = ghostnet::rf::Sideband::kLsb; }
       else if (m == "usb") { cfg.mode = ReceiveMode::kVoiceSsb; cfg.sideband = ghostnet::rf::Sideband::kUsb; }
       else if (m == "fm") cfg.mode = ReceiveMode::kVoiceFm;
+      else if (m == "ale") cfg.mode = ReceiveMode::kAle;
       else { std::fprintf(stderr, "unknown mode %s\n", m.c_str()); return 2; }
     }
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--rtty-center") cfg.rtty.center_hz = std::stod(next());
     else if (a == "--rtty-reverse") cfg.rtty.reverse = true;
+    else if (a == "--ale-dwell") cfg.ale.dwell_ms = std::stoi(next());
+    else if (a == "--ale-channels") {
+      const std::string v = next();
+      cfg.ale.channels_hz.clear();
+      if (v == "ghostnet") {
+        cfg.ale.channels_hz = {3598500, 7104500, 7106500, 7108500, 10128500,
+                               14111500, 14113500, 14115500, 18108500, 28108500};
+      } else {
+        std::size_t pos = 0;
+        while (pos < v.size()) {
+          const std::size_t comma = v.find(',', pos);
+          cfg.ale.channels_hz.push_back(static_cast<std::uint32_t>(std::stoul(v.substr(pos, comma - pos))));
+          pos = comma == std::string::npos ? v.size() : comma + 1;
+        }
+      }
+      if (!cfg.ale.channels_hz.empty()) cfg.dial_hz = cfg.ale.channels_hz.front();
+    }
     else if (a == "--help" || a == "-h") { usage(); return 0; }
     else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return 2; }
   }
@@ -265,6 +286,16 @@ int main(int argc, char** argv) {
     std::lock_guard<std::mutex> l(g_print);
     std::printf("\n>>> %s RTTY %.0f Hz (%d chars, %d framing errors): %s\n", utc_hms(line.start_ms).c_str(),
                 line.center_hz, line.characters, line.framing_errors, line.text.c_str());
+    std::fflush(stdout);
+  };
+  cb.on_ale_word = [](const ale::Word& w) {
+    std::fprintf(stdout, "%s ALE %.4f MHz  %-4s %s  (errors %d, votes %d/48)\n", utc_hms(w.time_ms).c_str(),
+                 w.channel_hz / 1e6, ale::preamble_name(w.preamble), w.chars, w.errors, 48 - w.bad_votes);
+    std::fflush(stdout);
+  };
+  cb.on_ale_transmission = [](const ale::Transmission& t) {
+    std::fprintf(stdout, "%s ALE %.4f MHz  ** %s **\n", utc_hms(t.end_ms).c_str(), t.channel_hz / 1e6,
+                 t.summary().c_str());
     std::fflush(stdout);
   };
   cb.on_frame = [](const FrameEvent& f) {
