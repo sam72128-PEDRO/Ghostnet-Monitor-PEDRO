@@ -40,7 +40,8 @@ class UiSmokeTest {
         assertTrue(compose.onAllNodesWithText("Booklet page", substring = true).fetchSemanticsNodes().isNotEmpty())
 
         compose.onNodeWithText("Export").performClick()
-        compose.onNodeWithText("Export diagnostics").assertExists()
+        compose.onNodeWithText("Send report").assertExists()
+        compose.onNodeWithText("Diagnostics only").assertExists()
 
         compose.onNodeWithText("Settings").performClick()
         compose.onNodeWithText("Run self-test").assertExists()

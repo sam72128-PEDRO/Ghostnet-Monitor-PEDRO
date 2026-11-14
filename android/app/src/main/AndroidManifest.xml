@@ -33,6 +33,18 @@
                 android:resource="@xml/rtlsdr_device_filter" />
         </activity>
 
+        <!-- Lets the user hand a problem report to an app of their choice
+             (email, Drive, Quick Share). Nothing is shared automatically. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="org.ghostnet.monitor.reports"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/report_paths" />
+        </provider>
+
         <service
             android:name=".MonitorService"
             android:exported="false"

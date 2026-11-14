@@ -8,12 +8,12 @@ rather than "it didn't work."
 The app is receive-only. It has no transmit, reply or keying function,
 and requests no internet, microphone or location permission.
 
-**Whenever anything goes wrong:** Export tab → **Export diagnostics**, and
-send me the file. It holds the device and USB details, every app and
-receiver event with timestamps, the RTL-SDR driver's own messages,
-periodic signal statistics, why the app last exited (including crashes),
-and the app's system log. That is usually enough to find the cause
-without guessing.
+**Whenever anything goes wrong:** Export tab → **Send report**, and pick
+email, Drive or Quick Share. It's one zip with everything: device and USB
+details, every app and receiver event with timestamps, the RTL-SDR
+driver's own messages, signal statistics, why the app last exited
+(including crashes), the latest session, and its recording if you made
+one. That is usually enough to find the cause without guessing.
 
 ## What you need
 
@@ -32,7 +32,7 @@ without guessing.
 |---|---|
 | Receive | Frequency preset, Start/Stop, Device / Signal / Decoder / Clock / Schedule status, live waterfall, decoded messages and raw frames |
 | Schedule | Every GhostNet V1.5 window in Florida time and UTC, region filters. Tap a JS8 window to select its frequency. Other modes are listed as Coming Soon. |
-| Export | Past sessions (view, or export JSON / CSV / TXT), IQ recordings (export as zip), **Export diagnostics** |
+| Export | **Send report**, past sessions (view, or export JSON / CSV / TXT), IQ recordings |
 | Settings | Find receiver, Invert spectrum, RTL AGC, PPM, IQ recording, verbose decoder log, **Run self-test**, session retention, about and licences |
 
 ## Step 0: install
@@ -58,8 +58,8 @@ demodulator and decoder on the tablet. It takes about 20 seconds.
 - **PASS** with `N0CALL: @GHOSTNET SELF TEST` means the native code works on
   this tablet. Note the "x real time" figure: it should be about 3–4 (the
   test is paced at 4x), and it must be well above 1.
-- **FAIL** means a software problem on this device. Export diagnostics, send
-  it, and stop here.
+- **FAIL** means a software problem on this device. Send report, and stop
+  here.
 
 ## Step 2: connect the receiver
 
@@ -85,7 +85,7 @@ Tap **START RECEIVING** and watch:
 
 | Line | Good looks like | If not |
 |---|---|---|
-| Device | `OK Receiving · RTL-SDR ... direct sampling 2` | `direct sampling 0` below 24 MHz means Q-branch mode didn't engage: export diagnostics |
+| Device | `OK Receiving · RTL-SDR ... direct sampling 2` | `direct sampling 0` below 24 MHz means Q-branch mode didn't engage: send report |
 | Signal | `OK Samples flowing · IQ about -20 to -45 dBFS` | `No samples`: USB or power problem. `Very weak`: antenna. `Overloaded`: turn RTL AGC off, or use a shorter antenna |
 | Waterfall | Noise texture, with vertical traces about 50 Hz wide (JS8 signals, usually 500–2500 Hz) coming and going every 15 s | Flat black or a single unchanging line: no antenna signal reaching the decoder |
 | Decoder | Frames within a few minutes; yellow ticks appear on the waterfall where decodes happen | See below |
@@ -101,8 +101,7 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
    wrong setting the decoder gets nothing at all.
 2. **RTL AGC.** Try the other setting.
 3. **Clock.** A tablet more than about 2 s off UTC decodes nothing.
-4. Still nothing: **Export diagnostics**, plus the recording (Export tab →
-   recording → Export), and send both.
+4. Still nothing: **Send report** and include the recording when asked.
 
 ## Step 4: GhostNet windows
 
@@ -128,11 +127,9 @@ stored.
 
 ## What to send back
 
-1. **Export diagnostics** (Export tab). Always, after any test, good or bad.
-2. The self-test result (it's also in the diagnostics).
-3. Which **Invert spectrum** setting decoded (this settles the open question).
-4. An exported session (JSON) from steps 3 and 4.
-5. If nothing decoded: the IQ recording zip.
+1. **Send report** (Export tab), after any test, good or bad. Include the
+   recording if nothing decoded.
+2. Which **Invert spectrum** setting decoded (this settles the open question).
 
 ## Step 6 (optional): desktop check with `ghostnet-rx`
 

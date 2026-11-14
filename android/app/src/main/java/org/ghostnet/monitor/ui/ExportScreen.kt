@@ -1,6 +1,8 @@
 package org.ghostnet.monitor.ui
 
+import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -41,10 +43,13 @@ import org.ghostnet.monitor.DiagnosticsExporter
 import org.ghostnet.monitor.MessageRecord
 import org.ghostnet.monitor.Presets
 import org.ghostnet.monitor.Recordings
+import org.ghostnet.monitor.ReportExporter
 import org.ghostnet.monitor.SessionDatabase
 import org.ghostnet.monitor.SessionExporter
 import org.ghostnet.monitor.SessionSummary
 import java.io.File
+
+enum class ReportAction { SHARE, SAVE }
 
 /**
  * Spec section 8.4: past sessions (including zero-decode ones) with
@@ -101,14 +106,60 @@ fun ExportScreen(controller: AppController) {
         if (uri != null) runExport("Diagnostics") { DiagnosticsExporter.export(context, uri) }
     }
 
+    // ---- problem report ----
+    var askRecording by remember { mutableStateOf<Pair<ReportAction, File>?>(null) }
+    var reportAction by remember { mutableStateOf(ReportAction.SHARE) }
+    var reportWithRecording by remember { mutableStateOf(false) }
+    val reportSaveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
+        if (uri != null) runExport("Report") {
+            context.contentResolver.openOutputStream(uri, "wt").use { out ->
+                requireNotNull(out) { "could not open export destination" }
+                ReportExporter.write(context, out, reportWithRecording)
+            }
+        }
+    }
+    fun finishReport(action: ReportAction, withRecording: Boolean) {
+        reportWithRecording = withRecording
+        when (action) {
+            ReportAction.SAVE -> reportSaveLauncher.launch(ReportExporter.fileName())
+            ReportAction.SHARE -> scope.launch {
+                controller.toast("Preparing report…")
+                val result = withContext(Dispatchers.IO) { runCatching { ReportExporter.writeForSharing(context, withRecording) } }
+                result.onSuccess { f ->
+                    val uri = FileProvider.getUriForFile(context, "org.ghostnet.monitor.reports", f)
+                    val send = Intent(Intent.ACTION_SEND)
+                        .setType("application/zip")
+                        .putExtra(Intent.EXTRA_STREAM, uri)
+                        .putExtra(Intent.EXTRA_SUBJECT, "GhostNet Monitor report")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    context.startActivity(Intent.createChooser(send, "Send report"))
+                }.onFailure {
+                    DiagLog.e("report", "report failed", it)
+                    controller.toast("Report failed: ${it.message}")
+                }
+            }
+        }
+    }
+    fun startReport(action: ReportAction) {
+        reportAction = action
+        scope.launch {
+            val rec = withContext(Dispatchers.IO) { ReportExporter.recordingForLatestSession(context) }
+            if (rec != null) askRecording = action to rec else finishReport(action, false)
+        }
+    }
+
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         item {
             Text("Export", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-            SectionCard("Diagnostics") {
-                Text("If anything goes wrong, export this and send it. It contains device and USB details, settings, " +
-                    "session summaries, the app's event log (including the RTL-SDR driver's own messages), why the app last " +
-                    "exited, and the app's system log.", style = MaterialTheme.typography.bodySmall)
-                Button(onClick = { diagnosticsLauncher.launch(DiagnosticsExporter.suggestedFileName()) }) { Text("Export diagnostics") }
+            SectionCard("Problem report") {
+                Text("If anything goes wrong, tap Send report. It bundles everything needed to find the cause into one " +
+                    "file: diagnostics, the latest session, and (if you made one) its recording.",
+                    style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { startReport(ReportAction.SHARE) }) { Text("Send report") }
+                    OutlinedButton(onClick = { startReport(ReportAction.SAVE) }) { Text("Save report to file") }
+                    TextButton(onClick = { diagnosticsLauncher.launch(DiagnosticsExporter.suggestedFileName()) }) { Text("Diagnostics only") }
+                }
             }
             Text("Sessions (${sessions.size})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
             if (sessions.isEmpty()) Text("No sessions yet.", modifier = Modifier.padding(8.dp))
@@ -181,6 +232,19 @@ fun ExportScreen(controller: AppController) {
                         }
                     }
                 }
+            },
+        )
+    }
+
+    askRecording?.let { (action, rec) ->
+        AlertDialog(
+            onDismissRequest = { askRecording = null },
+            confirmButton = { TextButton(onClick = { askRecording = null; finishReport(action, true) }) { Text("Include recording") } },
+            dismissButton = { TextButton(onClick = { askRecording = null; finishReport(action, false) }) { Text("Without it") } },
+            title = { Text("Include the IQ recording?") },
+            text = {
+                Text("The latest session has a raw recording (${Fmt.mb(rec.length())}). Include it if signals showed on " +
+                    "the waterfall but nothing decoded. It may be too large for email; Google Drive or Quick Share work.")
             },
         )
     }
