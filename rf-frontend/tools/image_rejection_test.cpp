@@ -52,7 +52,7 @@ double run_single_tone(double rf_hz, double measure_hz, const SsbDemodulatorConf
   const auto input = generate_tone(rf_hz, cfg.input_sample_rate_hz, input_count);
 
   std::vector<float> audio;
-  demod.process(input.data(), input.size(), &audio);
+  demod.process_real_i16(input.data(), input.size(), &audio);
 
   if (audio.size() <= warmup) {
     std::fprintf(stderr, "FAIL: not enough output samples to discard warmup (%zu <= %zu)\n", audio.size(), warmup);

@@ -50,14 +50,14 @@ int main() {
   SsbDemodulator in_band_demod(cfg);
   auto in_band_input = generate_tone(cfg.tune_offset_hz + in_band_audio_hz, cfg.input_sample_rate_hz, input_count);
   std::vector<float> in_band_audio;
-  in_band_demod.process(in_band_input.data(), in_band_input.size(), &in_band_audio);
+  in_band_demod.process_real_i16(in_band_input.data(), in_band_input.size(), &in_band_audio);
   std::vector<float> in_band_steady(in_band_audio.begin() + static_cast<long>(warmup), in_band_audio.end());
   const double in_band_mag = goertzel_magnitude(in_band_steady, in_band_audio_hz, cfg.audio_sample_rate_hz);
 
   SsbDemodulator oob_demod(cfg);
   auto oob_input = generate_tone(cfg.tune_offset_hz + out_of_band_audio_hz, cfg.input_sample_rate_hz, input_count);
   std::vector<float> oob_audio;
-  oob_demod.process(oob_input.data(), oob_input.size(), &oob_audio);
+  oob_demod.process_real_i16(oob_input.data(), oob_input.size(), &oob_audio);
   std::vector<float> oob_steady(oob_audio.begin() + static_cast<long>(warmup), oob_audio.end());
   const double oob_mag_at_oob_freq = goertzel_magnitude(oob_steady, out_of_band_audio_hz, cfg.audio_sample_rate_hz);
 

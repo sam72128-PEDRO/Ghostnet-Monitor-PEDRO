@@ -7,16 +7,18 @@ namespace ghostnet::rf {
 Nco::Nco(double sample_rate_hz) : sample_rate_hz_(sample_rate_hz) {}
 
 void Nco::set_frequency_hz(double frequency_hz) {
-  phase_increment_ = 2.0 * M_PI * frequency_hz / sample_rate_hz_;
+  const double w = 2.0 * 3.14159265358979323846 * frequency_hz / sample_rate_hz_;
+  step_ = {std::cos(w), -std::sin(w)};
 }
 
-std::complex<double> Nco::next() {
-  const std::complex<double> lo(std::cos(phase_), -std::sin(phase_));
-  phase_ += phase_increment_;
-  if (phase_ > 2.0 * M_PI || phase_ < -2.0 * M_PI) {
-    phase_ -= 2.0 * M_PI * std::floor(phase_ / (2.0 * M_PI));
+std::complex<float> Nco::next() {
+  const std::complex<float> out(static_cast<float>(phasor_.real()), static_cast<float>(phasor_.imag()));
+  phasor_ *= step_;
+  if (++since_normalize_ >= 1024) {
+    since_normalize_ = 0;
+    phasor_ /= std::abs(phasor_);
   }
-  return lo;
+  return out;
 }
 
 }  // namespace ghostnet::rf

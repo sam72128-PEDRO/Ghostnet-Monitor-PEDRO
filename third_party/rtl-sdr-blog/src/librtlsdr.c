@@ -127,6 +127,8 @@ struct rtlsdr_dev {
 
 void rtlsdr_set_gpio_bit(rtlsdr_dev_t *dev, uint8_t gpio, int val);
 static int rtlsdr_set_if_freq(rtlsdr_dev_t *dev, uint32_t freq);
+/* GhostNet Monitor local patch: shared tail of rtlsdr_open(), see below. */
+static int rtlsdr_open_common(rtlsdr_dev_t *dev, rtlsdr_dev_t **out_dev);
 
 /* generic tuner interface functions, shall be moved to the tuner implementations */
 int e4000_init(void *dev) {
@@ -1553,6 +1555,39 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
 
 	libusb_free_device_list(list, 1);
 
+	return rtlsdr_open_common(dev, out_dev);
+err:
+	if (dev) {
+		if (dev->devh)
+			libusb_close(dev->devh);
+
+		if (dev->ctx)
+			libusb_exit(dev->ctx);
+
+		free(dev);
+	}
+
+	return r;
+}
+
+/*
+ * GhostNet Monitor local patch (not upstream):
+ *
+ * rtlsdr_open() used to do device discovery and device initialisation in one
+ * function. Discovery is split from initialisation here so that Android,
+ * where an app cannot enumerate USB devices itself and instead receives an
+ * already-opened file descriptor from UsbManager, can share the exact same
+ * initialisation path via rtlsdr_open_sys_dev().
+ *
+ * On success, takes ownership of dev (and dev->ctx / dev->devh). On failure,
+ * releases them.
+ */
+static int rtlsdr_open_common(rtlsdr_dev_t *dev, rtlsdr_dev_t **out_dev)
+{
+	int r;
+	uint8_t reg;
+	uint8_t buf[EEPROM_SIZE];
+
 	if (libusb_kernel_driver_active(dev->devh, 0) == 1) {
 		dev->driver_active = 1;
 
@@ -1717,6 +1752,46 @@ err:
 	}
 
 	return r;
+}
+
+/*
+ * GhostNet Monitor local patch (not upstream): open a device from an
+ * OS-level handle instead of enumerating. On Android, sys_dev is the file
+ * descriptor from UsbDeviceConnection.getFileDescriptor(); the app must keep
+ * that UsbDeviceConnection open until rtlsdr_close() returns, and must not
+ * claim the interface itself.
+ */
+int rtlsdr_open_sys_dev(rtlsdr_dev_t **out_dev, intptr_t sys_dev)
+{
+	int r;
+	rtlsdr_dev_t *dev = NULL;
+	struct libusb_init_option options[1];
+
+	dev = malloc(sizeof(rtlsdr_dev_t));
+	if (NULL == dev)
+		return -ENOMEM;
+
+	memset(dev, 0, sizeof(rtlsdr_dev_t));
+	memcpy(dev->fir, fir_default, sizeof(fir_default));
+
+	options[0].option = LIBUSB_OPTION_NO_DEVICE_DISCOVERY;
+	r = libusb_init_context(&dev->ctx, options, 1);
+	if (r < 0) {
+		free(dev);
+		return r;
+	}
+
+	dev->dev_lost = 1;
+
+	r = libusb_wrap_sys_device(dev->ctx, sys_dev, &dev->devh);
+	if (r < 0) {
+		fprintf(stderr, "libusb_wrap_sys_device error %d\n", r);
+		libusb_exit(dev->ctx);
+		free(dev);
+		return r;
+	}
+
+	return rtlsdr_open_common(dev, out_dev);
 }
 
 int rtlsdr_close(rtlsdr_dev_t *dev)
