@@ -1,5 +1,10 @@
 # Vendored third-party code
 
+The app as a whole is GPL-2.0-or-later (`LICENSE`). Every component below
+has a licence compatible with that: MIT, BSD-3-Clause, MPL-2.0 and
+LGPL-2.1 code may be combined into a GPL-2.0-or-later work, and
+`rtl-sdr-blog` is itself GPL-2.0-or-later.
+
 Tracked as plain vendored source under `third_party/` for now. This is a
 known gap, not a final decision — see PHASE1_PLAN.md, work stream 1.
 Converting to git submodules (or another pinned-fetch mechanism) requires
@@ -13,7 +18,7 @@ remotes, and record the exact commit pinned at that time.
 | `third_party/libusb` | https://github.com/libusb/libusb (v1.0.30) | LGPL-2.1 | USB transport under Android `UsbDeviceConnection` fd | Currently linked **statically** into `libghostnet_native.so`. LGPL-2.1 permits that if users can relink (e.g. by providing object files or the app source). Since `rtl-sdr-blog` is GPLv2 and linked into the same library anyway, publishing the app's source under GPLv2 (WS2) satisfies both. |
 | `third_party/rtl-sdr-blog` | https://github.com/rtlsdrblog/rtl-sdr-blog | GPLv2 | RTL2832U/R820T2 tuner control, Q-branch direct sampling | This is the one real copyleft constraint in the stack. If statically linked into the app binary, GPLv2 obligations (source offer, license notice) apply to the combined work. Decide early (WS2) whether to vendor this as a separate GPL-licensed shared component with a clear boundary, or accept GPLv2 terms for the whole release. |
 | `third_party/Eigen` | https://gitlab.com/libeigen/eigen | MPL2 | Header-only linear algebra used by js8core | Header-only; kept as plain vendored snapshot even if other deps move to submodules. |
-| `third_party/CRCpp` | https://github.com/d-bahr/CRCpp | MIT | CRC implementation used by js8core | Header-only, small, fine as a plain vendored snapshot. |
+| `third_party/CRCpp` | https://github.com/d-bahr/CRCpp | BSD-3-Clause | CRC implementation used by js8core | Header-only, small, fine as a plain vendored snapshot. |
 
 ## References consulted (no code included)
 

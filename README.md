@@ -11,6 +11,18 @@ RTL-SDR IQ format and on arm64. Nothing has run on real hardware yet;
 [TESTING.md](TESTING.md) is the procedure. VARA, Winlink, DMR and
 GhostMesh are Coming Soon per the spec.
 
+## Licence
+
+GhostNet Monitor is free software, released under the **GNU General Public
+License, version 2 or (at your option) any later version** (see
+[`LICENSE`](LICENSE)). You may use, study, change and share it; if you
+distribute a modified version, its source must be available under the same
+terms. It is provided without any warranty.
+
+The GPL follows from the RTL-SDR driver (`rtl-sdr-blog`, GPL-2.0-or-later),
+which is built into the app. Bundled components keep their own licences;
+see [`THIRD_PARTY.md`](THIRD_PARTY.md).
+
 ## Documents
 
 | Document | What it is |

@@ -36,17 +36,20 @@ are done; see below.)
 - [ ] Submodules vs. vendored snapshot, with pinned upstream commits. Needs
       network access to the upstream hosts.
 
-### WS2 — Licence posture (decision needed from the owner)
+### WS2 — Licence posture (decided)
 
 The vendored `js8core` is an independent MIT reimplementation, not the
 GPLv3 JS8Call Android port the spec assumes; spec sections 4.1 and 9.5
 need updating. The real copyleft surface is `rtl-sdr-blog` (GPLv2, now
 patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
 
-- [ ] **Decide:** publish the app's source under GPLv2 (recommended; it
-      also satisfies the LGPL relinking condition), or restructure linking.
-      This must be settled before any APK is distributed beyond personal
-      testing.
+- [x] **Decided by the owner (2026-11-14):** the app is published as open
+      source under GPL-2.0-or-later (`LICENSE`, README). This matches the
+      licence of the bundled `rtl-sdr-blog` driver and satisfies libusb's
+      LGPL relinking condition, since the full source is available.
+- [ ] Before public release: make the GitHub repository public, and attach
+      the APK to a release together with the matching source (a tagged
+      commit), so every distributed APK has its exact source available.
 - [x] Spec 4.1, 9.5, 12.1 and 12.3 updated to name js8core (MIT); the GPLv3
       port is recorded as evaluated in Phase 0 and not used.
 
