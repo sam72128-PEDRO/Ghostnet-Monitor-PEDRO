@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-tests:
+    name: Native receive chain (host tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rf-frontend
+        run: |
+          cmake -S rf-frontend -B rf-frontend/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build rf-frontend/build -j
+          ctest --test-dir rf-frontend/build --output-on-failure
+
+      - name: rx-core (includes end-to-end synthetic receive test)
+        run: |
+          cmake -S rx-core -B rx-core/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build rx-core/build -j
+          ctest --test-dir rx-core/build --output-on-failure
+
+      - name: rx-core with ARM char semantics
+        run: |
+          cmake -S rx-core -B rx-core/build-uchar -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=-funsigned-char -DCMAKE_CXX_FLAGS=-funsigned-char
+          cmake --build rx-core/build-uchar -j
+          ctest --test-dir rx-core/build-uchar --output-on-failure
+
+  android:
+    name: Android APK + unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install pinned SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;25.1.8937393" "cmake;3.22.1"
+
+      - name: Build debug APK and run unit tests
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Check APK permissions stay receive-only
+        working-directory: android
+        run: |
+          perms=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump permissions app/build/outputs/apk/debug/app-debug.apk | grep uses-permission | sort)
+          echo "$perms"
+          expected=$(printf '%s\n' \
+            "uses-permission: name='android.permission.FOREGROUND_SERVICE'" \
+            "uses-permission: name='android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'" \
+            "uses-permission: name='android.permission.POST_NOTIFICATIONS'" \
+            "uses-permission: name='android.permission.WAKE_LOCK'" | sort)
+          if [ "$perms" != "$expected" ]; then
+            echo "::error::APK permissions changed. INTERNET, RECORD_AUDIO and similar must not be added."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostnet-monitor-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14

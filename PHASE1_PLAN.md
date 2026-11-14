@@ -23,7 +23,8 @@ DSP → 12 kHz PCM → js8core → frames → messages → UI → session log, o
 SM-T733, with at least one real decoded JS8 frame.
 
 **Deferred past M1:** DigiRig Mobile/Lite, RTTY, 2G ALE, analog voice,
-Schedule tab, Settings tab, full Compose four-tab navigation.
+the Schedule tab UI (the schedule logic itself is done), Settings tab,
+full Compose four-tab navigation.
 
 ### WS1 — Repo hygiene and provenance
 
@@ -46,7 +47,8 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
       also satisfies the LGPL relinking condition), or restructure linking.
       This must be settled before any APK is distributed beyond personal
       testing.
-- [ ] Update spec 4.1 / 9.5 to name js8core.
+- [x] Spec 4.1, 9.5, 12.1 and 12.3 updated to name js8core (MIT); the GPLv3
+      port is recorded as evaluated in Phase 0 and not used.
 
 ### WS3 — RTL-SDR capture and DSP
 
@@ -101,6 +103,18 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
       self-test.
 - [x] `ghostnet-rx` desktop tool: live, record (`.cu8` + `.meta`) and
       replay, so field captures can be debugged offline.
+
+### Done ahead of M1 (hardware-independent)
+
+- [x] GhostNet V1.5 frequency catalog and UTC schedule engine
+      (`GhostNetPlan.kt`, `ScheduleEngine.kt`). Covers the spec 11.3
+      frequency/schedule checks: 26 exact frequencies, 12 Thursday + 11
+      Saturday slots, Florida local labels through DST transitions, and the
+      page 17 VARA erratum. 11 JVM unit tests. The main screen shows the
+      current/next window; non-JS8 modes are labelled Coming Soon.
+- [x] CI (`.github/workflows/ci.yml`): host native tests (also with ARM
+      char semantics), Android unit tests, APK build, a check that APK
+      permissions stay receive-only, and the APK uploaded as an artifact.
 
 ### WS6 — Hardware validation on the SM-T733 (owner)
 

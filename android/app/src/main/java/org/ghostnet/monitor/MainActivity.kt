@@ -57,6 +57,8 @@ class MainActivity : Activity() {
     private lateinit var signalStatus: TextView
     private lateinit var decoderStatus: TextView
     private lateinit var clockStatus: TextView
+    private lateinit var scheduleStatus: TextView
+    private val schedule = ScheduleEngine()
     private lateinit var showMessages: Button
     private lateinit var showFrames: Button
     private lateinit var list: ListView
@@ -101,6 +103,11 @@ class MainActivity : Activity() {
     override fun onStop() {
         MonitorState.unobserve(refresh)
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        render() // refresh countdowns and device state when returning to the app
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -257,6 +264,7 @@ class MainActivity : Activity() {
 
         renderDevice(phase)
         renderSignalAndDecoder(phase)
+        renderSchedule()
         renderList()
     }
 
@@ -310,6 +318,25 @@ class MainActivity : Activity() {
             else -> OK to "Timing good (median DT %+.2f s over %d decodes)".format(s.medianDtS, s.dtSamples)
         }
         status(clockStatus, "Clock", clkLevel, clkText)
+    }
+
+    private fun renderSchedule() {
+        val now = Instant.now()
+        fun tag(o: ScheduleEngine.Occurrence) = if (o.event.receivableInThisBuild) "" else " (Coming Soon)"
+        val active = schedule.active(now)
+        val text = if (active.isNotEmpty()) {
+            active.joinToString("; ") { "NOW ${schedule.describe(it)}${tag(it)} · ${schedule.localLabel(it)}" }
+        } else {
+            val next = schedule.next(now)
+            val nextJs8 = schedule.next(now, receivableOnly = true)
+            buildString {
+                next?.let { append("Next: ${schedule.describe(it)}${tag(it)} · ${schedule.localLabel(it)} (in ${ScheduleEngine.until(now, it.start)})") }
+                if (nextJs8 != null && nextJs8 != next) {
+                    append("\nNext JS8: ${schedule.describe(nextJs8)} · ${schedule.localLabel(nextJs8)} (in ${ScheduleEngine.until(now, nextJs8.start)})")
+                }
+            }
+        }
+        status(scheduleStatus, "Schedule", IDLE, text.ifEmpty { "—" })
     }
 
     private fun renderList() {
@@ -394,7 +421,8 @@ class MainActivity : Activity() {
         signalStatus = text("", 14f)
         decoderStatus = text("", 14f)
         clockStatus = text("", 14f)
-        listOf(deviceStatus, signalStatus, decoderStatus, clockStatus).forEach { root.addView(it) }
+        scheduleStatus = text("", 14f)
+        listOf(deviceStatus, signalStatus, decoderStatus, clockStatus, scheduleStatus).forEach { root.addView(it) }
 
         invertSwitch = Switch(this).apply { text = "Invert spectrum"; setOnCheckedChangeListener { _, _ -> saveSettingsFromUi() } }
         agcSwitch = Switch(this).apply { text = "RTL AGC"; setOnCheckedChangeListener { _, _ -> saveSettingsFromUi() } }
