@@ -82,3 +82,27 @@ jobs:
           name: ghostnet-monitor-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+  # Every push to main publishes the tested APK as the "Latest build"
+  # pre-release, so it can be downloaded from the repository's Releases page
+  # (Actions artifacts need a login and expire after 14 days).
+  latest-build:
+    name: Publish latest APK
+    needs: [native-tests, android]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ghostnet-monitor-debug-apk
+      - name: Replace the "latest" pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv app-debug.apk GhostNet_Monitor_debug.apk
+          gh release delete latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create latest GhostNet_Monitor_debug.apk -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --title "Latest build" \
+            --notes "Debug APK built and tested by CI from commit ${GITHUB_SHA::7}. Receive-only; not yet verified on real hardware. Install by opening the APK on the tablet (allow installs from that source when Android asks)."
