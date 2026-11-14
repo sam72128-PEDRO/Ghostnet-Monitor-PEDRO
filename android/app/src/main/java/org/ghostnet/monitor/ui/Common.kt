@@ -104,6 +104,7 @@ object Status {
         val (h, t) = when {
             phase == MonitorState.Phase.ERROR -> Health.PROBLEM to "Error: ${MonitorState.error ?: "unknown"}"
             phase == MonitorState.Phase.RECEIVING -> Health.OK to "Receiving · ${MonitorState.deviceText}"
+            phase == MonitorState.Phase.CONNECTING && MonitorState.error != null -> Health.PROBLEM to MonitorState.error!!
             phase == MonitorState.Phase.CONNECTING || phase == MonitorState.Phase.READY -> Health.CHECK to "Connecting…"
             dev == null -> Health.PROBLEM to "No RTL-SDR connected"
             !usb.hasPermission(dev) -> Health.CHECK to "${RtlSdrDevices.describe(dev)} · tap Find receiver to grant USB access"

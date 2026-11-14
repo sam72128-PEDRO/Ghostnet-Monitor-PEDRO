@@ -71,6 +71,12 @@ class MainActivity : ComponentActivity(), AppController {
     override fun onResume() {
         super.onResume()
         tick.intValue++ // refresh countdowns and device state when returning
+        // A session waiting for its receiver to come back: if it's back but
+        // Android wants USB permission again, ask now; the service resumes
+        // by itself once it's granted.
+        if (MonitorState.phase == MonitorState.Phase.CONNECTING && MonitorState.error != null) {
+            RtlSdrDevices.find(usb)?.takeIf { !usb.hasPermission(it) }?.let { requestUsbPermission() }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

@@ -49,6 +49,12 @@ class MonitorService : Service() {
     private var statsTask: ScheduledFuture<*>? = null
     private var lastNotifiedMessages = -1L
     private var pollCount = 0L
+    // Reconnect after the receiver drops out mid-session (USB power or cable).
+    private var reconnectTask: ScheduledFuture<*>? = null
+    private var disconnectedAtMs = 0L
+    private var reconnects = 0
+    private val gapNotes = mutableListOf<String>()
+    private var permissionNotified = false
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -56,7 +62,7 @@ class MonitorService : Service() {
             val gone = intent.usbDevice() ?: return
             DiagLog.w(TAG, "USB detached: ${RtlSdrDevices.describe(gone)} at ${gone.deviceName}")
             if (gone.deviceName == device?.deviceName) {
-                control.execute { stopSession("Interrupted", "device_removed", "USB receiver was disconnected") }
+                control.execute { suspendForReconnect("USB receiver was disconnected") }
             }
         }
     }
@@ -130,6 +136,8 @@ class MonitorService : Service() {
             return fail("Receiver did not initialise: $err")
         }
         MonitorState.setPhase(MonitorState.Phase.READY)
+        reconnects = 0
+        gapNotes.clear()
 
         val start = System.currentTimeMillis()
         // Digital modes get a session row; analog voice never creates one,
@@ -164,6 +172,85 @@ class MonitorService : Service() {
             " receiving ${s.mode.label}: $described" + (recording?.let { ", recording to ${it.name}" } ?: ""))
     }
 
+    /**
+     * The receiver vanished mid-session (unplugged, USB power dropped, or the
+     * stream died). Keep the session and the foreground service, and resume
+     * as soon as the dongle is back; give up after [RECONNECT_WINDOW_MS].
+     */
+    private fun suspendForReconnect(detail: String) {
+        val rx = receiver ?: return
+        statsTask?.cancel(false)
+        statsTask = null
+        runCatching { rx.stop() }
+        rx.close()
+        connection?.close()
+        receiver = null
+        connection = null
+        device = null
+        recording?.let { gapNotes.add("IQ recording ${it.name} (${it.length()} bytes) ended at the disconnect") }
+        recording = null
+        disconnectedAtMs = System.currentTimeMillis()
+        permissionNotified = false
+        DiagLog.w(TAG, "receiver lost: $detail; session kept, waiting up to ${RECONNECT_WINDOW_MS / 60_000} min for it to come back")
+        MonitorState.setPhase(MonitorState.Phase.CONNECTING,
+            "Receiver disconnected at ${java.time.Instant.ofEpochMilli(disconnectedAtMs)}. Waiting for it to come back; the session is kept.")
+        notify("Receiver disconnected · will resume automatically when it's back")
+        reconnectTask?.cancel(false)
+        reconnectTask = control.scheduleWithFixedDelay({ tryReconnect() }, 2, 2, TimeUnit.SECONDS)
+    }
+
+    private fun tryReconnect() {
+        if (receiver != null) return
+        val s = settings ?: return
+        val waited = System.currentTimeMillis() - disconnectedAtMs
+        if (waited > RECONNECT_WINDOW_MS) {
+            stopSession("Interrupted", "device_removed",
+                "Receiver disconnected and did not come back within ${RECONNECT_WINDOW_MS / 60_000} min")
+            return
+        }
+        val usb = getSystemService(UsbManager::class.java)
+        val dev = RtlSdrDevices.find(usb) ?: return
+        if (!usb.hasPermission(dev)) {
+            if (!permissionNotified) {
+                permissionNotified = true
+                DiagLog.w(TAG, "receiver is back but USB permission is needed again")
+                notify("Receiver is back · open GhostNet Monitor to allow USB access")
+            }
+            return
+        }
+        val conn = usb.openDevice(dev) ?: return
+        val rx = NativeReceiver()
+        rx.openFd(conn.fileDescriptor)?.let { err ->
+            DiagLog.w(TAG, "reconnect: receiver did not initialise yet: $err")
+            rx.close()
+            conn.close()
+            return
+        }
+        recording = if (s.recordIq && s.mode.digital) Recordings.newFile(this, s.preset.dialHz) else null
+        rx.start(s, recording?.path, s.recordMaxBytes, Listener(sessionId))?.let { err ->
+            DiagLog.w(TAG, "reconnect: receiver start failed: $err")
+            rx.close()
+            conn.close()
+            recording = null
+            return
+        }
+        reconnectTask?.cancel(false)
+        reconnectTask = null
+        receiver = rx
+        connection = conn
+        device = dev
+        reconnects++
+        val gap = "receiver offline ${waited / 1000} s from ${java.time.Instant.ofEpochMilli(disconnectedAtMs)}"
+        gapNotes.add(gap)
+        val described = rx.describe()
+        MonitorState.setDevice(described)
+        MonitorState.setPhase(MonitorState.Phase.RECEIVING)
+        statsTask = control.scheduleWithFixedDelay({ pollStats() }, 1, 1, TimeUnit.SECONDS)
+        lastNotifiedMessages = -1
+        DiagLog.i(TAG, "receiver reconnected ($gap); session ${sessionId ?: "(voice)"} resumed: $described" +
+            (recording?.let { ", recording to ${it.name}" } ?: ""))
+    }
+
     private fun fail(message: String) {
         DiagLog.e(TAG, message)
         MonitorState.setPhase(MonitorState.Phase.ERROR, message)
@@ -173,7 +260,10 @@ class MonitorService : Service() {
 
     /** state: Completed / Interrupted / Failed (spec section 8.1). */
     private fun stopSession(state: String, reason: String, detail: String?) {
-        val rx = receiver ?: run {
+        reconnectTask?.cancel(false)
+        reconnectTask = null
+        val waiting = receiver == null && settings != null && disconnectedAtMs > 0
+        val rx = receiver ?: if (waiting) null else run {
             if (MonitorState.phase != MonitorState.Phase.ERROR) MonitorState.setPhase(MonitorState.Phase.IDLE)
             stopForegroundCompat()
             stopSelf()
@@ -183,9 +273,9 @@ class MonitorService : Service() {
         statsTask?.cancel(false)
         statsTask = null
 
-        val finalStats = runCatching { rx.stats() }.getOrNull()
-        rx.stop() // delivers any half-received messages before returning
-        rx.close()
+        val finalStats = rx?.let { r -> runCatching { r.stats() }.getOrNull() }
+        rx?.stop() // delivers any half-received messages before returning
+        rx?.close()
         connection?.close()
         receiver = null
         connection = null
@@ -200,6 +290,7 @@ class MonitorService : Service() {
         val clockNote = finalStats?.let { clockNote(it) }
         val notes = listOfNotNull(
             detail,
+            if (reconnects > 0 || gapNotes.isNotEmpty()) "reconnected $reconnects time(s): ${gapNotes.joinToString("; ")}" else null,
             finalStats?.let { "decode passes ${it.decodePasses}, IQ ${it.iqBytes} bytes, dropped ${it.droppedBytes} bytes" },
             recording?.let { "IQ recording ${it.name} (${it.length()} bytes)" },
         ).joinToString("; ")
@@ -209,6 +300,10 @@ class MonitorService : Service() {
             "session $id ended: $state ($reason)${detail?.let { " · $it" } ?: ""} · $notes" + (clockNote?.let { " · $it" } ?: ""),
         )
         recording = null
+        disconnectedAtMs = 0
+        reconnects = 0
+        gapNotes.clear()
+        settings = null
 
         val phase = if (state == "Completed") MonitorState.Phase.IDLE else MonitorState.Phase.ERROR
         MonitorState.setPhase(phase, if (state == "Completed") null else (detail ?: reason))
@@ -289,7 +384,7 @@ class MonitorService : Service() {
         override fun onSourceError(message: String) {
             DiagLog.e(TAG, "source error: $message")
             // Called on the native USB thread: hand off, never stop from here.
-            control.execute { stopSession("Interrupted", "source_error", message) }
+            control.execute { suspendForReconnect(message) }
         }
 
         override fun onSpectrum(bins: FloatArray, binHz: Float) = Waterfall.addRow(bins)
@@ -398,6 +493,8 @@ class MonitorService : Service() {
     }
 
     companion object {
+        /** How long a session waits for a dropped receiver to come back. */
+        const val RECONNECT_WINDOW_MS = 10 * 60_000L
         const val ACTION_START = "org.ghostnet.monitor.START"
         const val ACTION_STOP = "org.ghostnet.monitor.STOP"
         const val EXTRA_DEVICE_NAME = "device_name"

@@ -102,7 +102,8 @@ fun ReceiveScreen(controller: AppController) {
                 Text(
                     when (phase) {
                         MonitorState.Phase.RECEIVING -> "STOP"
-                        MonitorState.Phase.CONNECTING, MonitorState.Phase.READY -> "CONNECTING…"
+                        MonitorState.Phase.CONNECTING -> if (MonitorState.error != null) "STOP (waiting for receiver)" else "CONNECTING…"
+                        MonitorState.Phase.READY -> "CONNECTING…"
                         MonitorState.Phase.STOPPING -> "STOPPING…"
                         else -> if (mode.digital) "START RECEIVING" else "START LISTENING"
                     },

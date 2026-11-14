@@ -37,7 +37,7 @@ one. That is usually enough to find the cause without guessing.
 
 ## Step 0: install
 
-Sideload `GhostNet_Monitor_0.6_debug.apk`, or build it:
+Sideload `GhostNet_Monitor_0.6.2_debug.apk`, or build it:
 
 ```bash
 cd android
@@ -170,9 +170,17 @@ stored.
 - **Screen off.** Start receiving, lock the tablet for 15 minutes, unlock.
   The frame count should have kept rising, and the notification should
   stay up the whole time.
-- **Unplug while receiving.** The session should end as `Interrupted
-  (device_removed)` (shown on the Export tab), and the app should show the
-  error without crashing.
+- **Unplug while receiving.** The Device line should say the receiver
+  disconnected and the app is waiting for it, and the button reads
+  "STOP (waiting for receiver)". Plug it back in: receiving resumes by itself
+  within a few seconds, in the same session, with the gap noted. Left
+  unplugged for 10 minutes, the session ends as `Interrupted
+  (device_removed)`. No crash either way.
+- **Dropouts on their own** (the dongle vanishing while you switch apps) are
+  a USB power or connection problem, not the app: the first field test
+  logged Android's own USB-detach event at the same moment. The app now
+  reconnects by itself, but a powered USB-C hub, or a different OTG adapter
+  or cable, is the real fix.
 - **Power.** Note whether the tablet charges or drains through a powered
   hub during a long session, and any heat.
 - **One-hour run.** Battery at start and end, and whether the Signal line
