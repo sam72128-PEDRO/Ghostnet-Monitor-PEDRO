@@ -107,7 +107,16 @@ data class ReceiveSettings(
     val submodeMask: Int = 0b01111,
     /** ALE scan dwell per channel. */
     val aleDwellMs: Int = 1000,
+    /** Leave 28.1085 MHz out of the scan (the one channel that needs the tuner instead of direct sampling). */
+    val aleSkip28: Boolean = false,
+    /** JS8: if nothing decodes for 10 min, try the other spectrum orientation once. */
+    val invertAuto: Boolean = true,
+    /** Set once a JS8 decode has confirmed [invertSpectrum] on this receiver; turns the automatic check off. */
+    val invertConfirmed: Boolean = false,
 ) {
+    /** The ALE channels this session scans. */
+    val aleChannels: List<Int> get() = preset.aleChannels.filter { !(aleSkip28 && it > 24_000_000) }
+
     val mode: RxMode get() = preset.mode
 
     /** 240 kS/s x 2 bytes. */
@@ -119,7 +128,8 @@ data class ReceiveSettings(
         append(", RTL AGC ").append(if (rtlAgc) "on" else "off")
         if (invertSpectrum) append(", spectrum inverted")
         if (mode == RxMode.RTTY) append(", RTTY shift ").append(rttyShiftHz).append(" Hz").append(if (rttyReverse) " reversed" else "")
-        if (mode == RxMode.ALE && preset.aleChannels.size > 1) append(", scanning ").append(preset.aleChannels.size)
+        if (mode == RxMode.JS8 && invertAuto && !invertConfirmed) append(", automatic orientation check")
+        if (mode == RxMode.ALE && aleChannels.size > 1) append(", scanning ").append(aleChannels.size)
             .append(" channels, dwell ").append(aleDwellMs).append(" ms (no IQ recording while scanning)")
         if (mode == RxMode.VOICE_FM) append(", squelch ").append(if (fmSquelch) "on" else "off")
         if (recordIq && mode.digital) append(", recording IQ (max ").append(recordMaxMinutes).append(" min)")
@@ -144,6 +154,9 @@ data class ReceiveSettings(
                 fmSquelch = p.getBoolean("fm_squelch", true),
                 volume = p.getFloat("volume", 0.8f),
                 aleDwellMs = p.getInt("ale_dwell_ms", 1000),
+                aleSkip28 = p.getBoolean("ale_skip_28", false),
+                invertAuto = p.getBoolean("invert_auto", true),
+                invertConfirmed = p.getBoolean("invert_confirmed", false),
             )
         }
 
@@ -161,6 +174,9 @@ data class ReceiveSettings(
                 .putBoolean("fm_squelch", s.fmSquelch)
                 .putFloat("volume", s.volume)
                 .putInt("ale_dwell_ms", s.aleDwellMs)
+                .putBoolean("ale_skip_28", s.aleSkip28)
+                .putBoolean("invert_auto", s.invertAuto)
+                .putBoolean("invert_confirmed", s.invertConfirmed)
                 .apply()
         }
     }

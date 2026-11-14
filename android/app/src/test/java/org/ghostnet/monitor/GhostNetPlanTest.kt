@@ -73,6 +73,10 @@ class GhostNetPlanTest {
         // ALE windows use the whole channel list: the scan preset covers exactly the catalog's ALE set.
         assertEquals(GhostNetPlan.ALE_CHANNEL_SET.map { it.hz.toInt() }, Presets.byId("alescan").aleChannels)
         assertEquals(RxMode.ALE, Presets.byId("alescan").mode)
+        val scan = ReceiveSettings(Presets.byId("alescan"), invertSpectrum = false, rtlAgc = true, ppm = 0)
+        assertEquals(10, scan.aleChannels.size)
+        assertEquals(9, scan.copy(aleSkip28 = true).aleChannels.size)
+        assertTrue(scan.copy(aleSkip28 = true).aleChannels.all { it < 24_000_000 })
         // Every receivable single-frequency window maps to a preset the app can tune.
         for (e in GhostNetPlan.EVENTS.filter { it.receivableInThisBuild && it.frequencyId != null }) {
             val hz = GhostNetPlan.frequency(e.frequencyId!!).hz

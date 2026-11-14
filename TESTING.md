@@ -37,7 +37,7 @@ one. That is usually enough to find the cause without guessing.
 
 ## Step 0: install
 
-Sideload `GhostNet_Monitor_0.5_debug.apk`, or build it:
+Sideload `GhostNet_Monitor_0.6_debug.apk`, or build it:
 
 ```bash
 cd android
@@ -104,10 +104,13 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
 
 ### Signal OK, traces on the waterfall, nothing decodes
 
-1. **Invert spectrum.** Stop, Settings → turn it on, start again. This is
-   the most likely cause and the one thing I couldn't verify without
-   hardware: whether Q-branch direct sampling flips the spectrum. With the
-   wrong setting the decoder gets nothing at all.
+1. **Spectrum orientation.** You normally don't need to touch this. The
+   driver turns spectrum inversion off in direct sampling, so Invert off
+   should be right. If it isn't, the **automatic orientation check** (on by
+   default) tries the other orientation after 10 minutes with no decodes;
+   the Decoder line says when it does. The first decode confirms the
+   setting and saves it for every mode (Settings shows "Confirmed by a JS8
+   decode"). So give it 20 minutes on a busy frequency before going on.
 2. **RTL AGC.** Try the other setting.
 3. **Clock.** A tablet more than about 2 s off UTC decodes nothing.
 4. Still nothing: **Send report** and include the recording when asked.
@@ -129,10 +132,12 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
 Receive → **ALE (2G)** → **ALE · scan all 10 GhostNet channels** → START
 RECEIVING. The Decoder line shows `Scanning · now x.xxxx MHz (channel n)`
 and should step through the list about once a second. Check this first:
-if the channel never changes, or the line says the receiver refused to
-change channel, send a report. That is the part of ALE I could not test
-without the dongle, and the 28.1085 MHz channel additionally makes the
-driver switch out of direct sampling and back on every pass.
+it's the part of ALE I could not test without the dongle. Each channel's
+actual tuning is written to the diagnostics log the first time it's used.
+A channel that refuses to tune 3 times in a row is skipped for 5 minutes
+(the Decoder line says so) instead of stalling the scan. 28.1085 MHz is the
+likeliest to cause trouble, because the driver leaves direct sampling for
+it; Settings → **Leave out 28.1085 MHz** removes it.
 
 Hearing GhostNet ALE needs someone sounding or calling, so it mostly waits
 for an ALE window on the Schedule tab. To check ALE decoding at any time,
@@ -177,9 +182,24 @@ stored.
 
 1. **Send report** (Export tab), after any test, good or bad. Include the
    recording if nothing decoded.
-2. Which **Invert spectrum** setting decoded (this settles the open question).
+2. Whether the automatic check had to flip the orientation (the Decoder line
+   said so, and the report records it).
 3. For ALE: whether scanning stepped through all 10 channels, and any
    decoded call or sounding (or a recording of bursts that didn't decode).
+
+## Real recordings without the dongle
+
+The decoders accept ordinary audio recordings (WAV, any sample rate, made
+in USB on the dial frequency), which is how sample recordings from the web
+can be checked before any hardware test:
+
+```bash
+./build/ghostnet-rx --mode ale --wav ALE_sample.wav
+./build/ghostnet-rx --mode rtty --wav RTTY_45_sample.wav
+./build/ghostnet-rx --mode js8 --wav JS8_sample.wav --start-unix-ms <UTC ms of the first sample>
+```
+
+Or upload the WAV files in the chat and I'll run them.
 
 ## Step 6 (optional): desktop check with `ghostnet-rx`
 

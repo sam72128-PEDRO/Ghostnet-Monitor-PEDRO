@@ -216,10 +216,26 @@ class MonitorService : Service() {
         stopSelf()
     }
 
+    /**
+     * Spectrum orientation is a property of the dongle and the HF direct-
+     * sampling path, not of the mode: once a JS8 decode confirms it, save it
+     * so RTTY and ALE use the same setting and the automatic check stops.
+     */
+    private fun rememberOrientation(s: NativeReceiver.Stats) {
+        val cur = settings ?: return
+        if (!s.invertConfirmed || cur.mode != RxMode.JS8 || cur.preset.dialHz >= 24_000_000) return
+        val saved = ReceiveSettings.load(this)
+        if (saved.invertConfirmed && saved.invertSpectrum == s.invertActive) return
+        ReceiveSettings.save(this, saved.copy(invertSpectrum = s.invertActive, invertConfirmed = true))
+        DiagLog.i(TAG, "spectrum orientation confirmed by a JS8 decode: invert=${s.invertActive}" +
+            if (s.invertFlips > 0) " (found by the automatic check)" else "")
+    }
+
     private fun pollStats() {
         val rx = receiver ?: return
         val s = rx.stats()
         MonitorState.updateStats(s)
+        rememberOrientation(s)
         if (s.messages != lastNotifiedMessages) {
             lastNotifiedMessages = s.messages
             settings?.let {

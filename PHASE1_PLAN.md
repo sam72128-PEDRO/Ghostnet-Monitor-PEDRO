@@ -168,6 +168,26 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
       noise, carrier and sweep; full IQ-chain scan test with a simulated
       dongle that retunes. Format cross-checked against LinuxALE (GPLv2,
       reference only); PC-ALE rejected (see THIRD_PARTY.md).
+- [x] **Odds-improvement pass (v0.6), no hardware needed:**
+      - Spectrum orientation: the driver disables spectrum inversion in
+        direct sampling and tunes the DDC to the exact frequency, so Invert
+        off is expected to be correct on all HF channels. Backstop: an
+        automatic check (JS8) tries the other orientation after 10 min with
+        no decodes, reverts after another 10 if that fails, and the first
+        decode confirms and saves the setting for all modes. Tested both ways.
+      - Retunes: verified against the driver's reported frequency, one
+        retry, each channel's actual tuning logged once, a channel failing
+        3 times in a row skipped for 5 min (tested with a simulated
+        refusing channel), option to leave out 28.1085 MHz.
+      - WAV input (`Receiver::push_audio`, `ghostnet-rx --wav`): real
+        off-air audio recordings run through the same decoders. Tested with
+        48 kHz and 44.1 kHz files (ALE, RTTY).
+      - arm64: the full end-to-end suite passes under QEMU at 1.5x speed,
+        including JS8 and the self-test; the earlier failures were the
+        emulator not keeping up at 10x.
+- [ ] **Real recordings (owner, no hardware):** sample WAVs of ALE, JS8 and
+      45.45 baud RTTY from the web, run through `--wav`. This is the one
+      remaining way to check the ALE format details before a hardware test.
 - [ ] **ALE on air (owner):** no real ALE signal has been decoded yet. The
       B-codeword check-bit inversion and the AMD/command split come from
       LinuxALE and my reading of the standard, not from a recording.

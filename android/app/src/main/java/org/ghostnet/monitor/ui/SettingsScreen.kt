@@ -78,8 +78,13 @@ fun SettingsScreen(controller: AppController) {
         SectionCard("Receiver (RTL-SDR Blog V3)") {
             StatusRow(Status.device(controller.usb))
             OutlinedButton(onClick = { controller.requestUsbPermission() }, enabled = idle) { Text("Find receiver / grant USB access") }
-            Toggle("Invert spectrum (HF)", "Flip if signals show on the waterfall but nothing decodes. Applies below 24 MHz, where Q-branch direct sampling orientation is unverified on this hardware.",
-                s.invertSpectrum, idle) { update(s.copy(invertSpectrum = it)) }
+            Toggle("Invert spectrum (HF)",
+                if (s.invertConfirmed) "Confirmed by a JS8 decode on this receiver. Changing it by hand clears the confirmation."
+                else "Off is expected to be right for the V3 (the driver turns inversion off in direct sampling). Not yet confirmed on this receiver.",
+                s.invertSpectrum, idle) { update(s.copy(invertSpectrum = it, invertConfirmed = false)) }
+            Toggle("Automatic orientation check (JS8)",
+                "If nothing decodes for 10 minutes, try the other orientation once (and switch back after another 10 if that doesn't help either). The first decode confirms and saves the setting for all modes.",
+                s.invertAuto, idle && !s.invertConfirmed) { update(s.copy(invertAuto = it)) }
             Toggle("RTL AGC", "RTL2832U digital gain control. Turn off if the Signal line reports overload.",
                 s.rtlAgc, idle) { update(s.copy(rtlAgc = it)) }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -113,6 +118,9 @@ fun SettingsScreen(controller: AppController) {
                         onClick = { update(s.copy(aleDwellMs = ms)) }, label = { Text("${ms / 1000} s") })
                 }
             }
+            Toggle("Leave out 28.1085 MHz",
+                "The only channel above 24 MHz: the driver switches from direct sampling to the tuner and back on every pass. Turn this on if the Decoder line reports retune failures there.",
+                s.aleSkip28, idle) { update(s.copy(aleSkip28 = it)) }
             Text("The scan stops on any decoded ALE word and resumes 4 s after the channel goes quiet. 1 s catches every call that lasts at least one pass through the list; longer dwells suit slow calling stations.",
                 style = MaterialTheme.typography.bodySmall)
         }

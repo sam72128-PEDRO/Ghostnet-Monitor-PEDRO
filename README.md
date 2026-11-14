@@ -5,7 +5,7 @@ network: RTL-SDR in; JS8, RTTY and 2G ALE decoded and logged (ALE with
 10-channel scanning); LSB and VHF/UHF FM voice played live (never recorded). There is no transmit path anywhere in
 the design.
 
-**Current state (v0.5):** JS8, RTTY, 2G ALE, LSB voice and FM voice are
+**Current state (v0.6):** JS8, RTTY, 2G ALE, LSB voice and FM voice are
 code-complete and pass all software tests, including full-chain tests in
 RTL-SDR IQ format and on arm64. Nothing has run on real hardware yet;
 [TESTING.md](TESTING.md) is the procedure. VARA, Winlink, DMR and

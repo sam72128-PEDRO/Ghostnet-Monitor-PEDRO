@@ -60,7 +60,8 @@ class NativeReceiver : AutoCloseable {
             settings.invertSpectrum, settings.ppm, settings.rtlAgc, settings.directSampling,
             settings.submodeMask, if (settings.mode.digital) recordPath else null, recordMaxBytes, settings.verboseLog,
             settings.mode.nativeId, 0.0, settings.rttyShiftHz.toDouble(), settings.rttyReverse, settings.fmSquelch,
-            settings.preset.aleChannels.toIntArray(), settings.aleDwellMs, listener,
+            settings.aleChannels.toIntArray(), settings.aleDwellMs,
+            settings.mode == RxMode.JS8 && settings.invertAuto && !settings.invertConfirmed, listener,
         )
 
     /** Blocks until stopped; half-received messages arrive via onMessage before it returns. */
@@ -113,6 +114,10 @@ class NativeReceiver : AutoCloseable {
         val retunes: Long = 0,
         val retuneFailures: Long = 0,
         val aleChannelIndex: Int = 0,
+        val invertActive: Boolean = false,
+        val invertConfirmed: Boolean = false,
+        val invertFlips: Int = 0,
+        val channelsSkipped: Int = 0,
     ) {
         companion object {
             // Layout must match nativeStats() in ghostnet_jni.cpp.
@@ -152,6 +157,10 @@ class NativeReceiver : AutoCloseable {
                 retunes = a[32].toLong(),
                 retuneFailures = a[33].toLong(),
                 aleChannelIndex = a[34].toInt(),
+                invertActive = a[35] != 0.0,
+                invertConfirmed = a[36] != 0.0,
+                invertFlips = a[37].toInt(),
+                channelsSkipped = a[38].toInt(),
             )
         }
     }
@@ -207,7 +216,7 @@ class NativeReceiver : AutoCloseable {
             invertSpectrum: Boolean, ppm: Int, rtlAgc: Boolean, directSampling: Int, submodeMask: Int,
             recordPath: String?, recordMaxBytes: Long, verboseLog: Boolean, mode: Int, rttyCenterHz: Double,
             rttyShiftHz: Double, rttyReverse: Boolean, fmSquelch: Boolean, aleChannels: IntArray, aleDwellMs: Int,
-            listener: NativeListener,
+            autoInvert: Boolean, listener: NativeListener,
         ): String?
         @JvmStatic private external fun nativeStop(handle: Long)
         @JvmStatic private external fun nativeDescribe(handle: Long): String

@@ -79,6 +79,10 @@ class SsbDemodulator {
   // the audio. Used to back-date audio timestamps for JS8 slot alignment.
   double latency_seconds() const;
 
+  // Change the invert setting while running (automatic orientation check).
+  void set_invert_spectrum(bool invert) { config_.invert_spectrum = invert; }
+  bool invert_spectrum() const { return config_.invert_spectrum; }
+
  private:
   void push(std::complex<float> sample, std::vector<float>* audio_out);
 

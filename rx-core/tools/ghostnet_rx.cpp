@@ -24,6 +24,7 @@
 
 #include "ghostnet/rx/file_iq_source.hpp"
 #include "ghostnet/rx/receiver.hpp"
+#include "ghostnet/rx/wav_audio.hpp"
 #include "ghostnet/rx/rtlsdr_source.hpp"
 
 using namespace ghostnet::rx;
@@ -69,6 +70,9 @@ void usage() {
       "  --gain TENTHS_DB       tuner gain (only used above 24 MHz)\n"
       "  --record FILE.cu8      also write raw IQ (+ FILE.cu8.meta)\n"
       "  --iq-file FILE.cu8     replay a recording instead of using hardware\n"
+      "  --wav FILE.wav         decode an audio recording (USB audio, any rate/bit depth)\n"
+      "                         instead of using hardware. JS8: the file is assumed to start\n"
+      "                         on a 15 s slot boundary unless --start-unix-ms is given\n"
       "  --speed X              replay speed (default 8)\n"
       "  --start-unix-ms MS     replay: UTC of the first sample (default from .meta)\n"
       "  --seconds N            stop after N seconds\n"
@@ -134,6 +138,7 @@ int main(int argc, char** argv) {
   std::uint32_t device = 0;
   std::string record_path;
   std::string iq_file;
+  std::string wav_file;
   double speed = 8.0;
   std::int64_t start_unix_ms = 0;
   double seconds = 0.0;
@@ -167,6 +172,7 @@ int main(int argc, char** argv) {
     else if (a == "--gain") rtl.tuner_gain_tenths_db = std::stoi(next());
     else if (a == "--record") record_path = next();
     else if (a == "--iq-file") iq_file = next();
+    else if (a == "--wav") wav_file = next();
     else if (a == "--speed") speed = std::stod(next());
     else if (a == "--start-unix-ms") start_unix_ms = std::stoll(next());
     else if (a == "--seconds") seconds = std::stod(next());
@@ -217,7 +223,21 @@ int main(int argc, char** argv) {
   std::unique_ptr<RecordingSource> recorder;
   IqSource* source = nullptr;
 
-  if (!iq_file.empty()) {
+  std::vector<float> wav_audio;
+  if (!wav_file.empty()) {
+    WavInfo info;
+    std::string error;
+    if (!read_wav_mono(wav_file, 12000.0, &wav_audio, &info, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    std::fprintf(stderr, "wav: %s, %d Hz, %d ch, %d bit, %.1f s\n", wav_file.c_str(), info.sample_rate_hz,
+                 info.channels, info.bits, info.seconds);
+    if (!start_unix_ms) start_unix_ms = (now_ms() / 15000 - 40) * 15000;  // a past slot boundary
+    cfg.sample_clock_timestamps = true;
+    cfg.replay_start_unix_ms = start_unix_ms;
+    cfg.record_path.clear();
+  } else if (!iq_file.empty()) {
     auto meta = read_capture_meta(iq_file);
     if (meta.count("dial_hz")) cfg.dial_hz = static_cast<std::uint32_t>(std::stoul(meta["dial_hz"]));
     if (meta.count("sample_rate_hz")) cfg.sample_rate_hz = static_cast<std::uint32_t>(std::stoul(meta["sample_rate_hz"]));
@@ -338,6 +358,19 @@ int main(int argc, char** argv) {
   std::thread file_watch;
   std::atomic<bool> file_done{false};
   if (file) file_watch = std::thread([&] { file->wait_finished(); file_done = true; });
+  if (!wav_audio.empty()) {
+    file_watch = std::thread([&] {
+      const auto w0 = std::chrono::steady_clock::now();
+      for (std::size_t off = 0; off < wav_audio.size() && !g_quit; off += 1200) {
+        rx.push_audio(wav_audio.data() + off, std::min<std::size_t>(1200, wav_audio.size() - off));
+        std::this_thread::sleep_until(w0 + std::chrono::duration<double>((off + 1200) / 12000.0 / speed));
+      }
+      // Trailing silence so the last JS8 window and ALE word complete.
+      std::vector<float> tail(12000 * 16, 0.0f);
+      rx.push_audio(tail.data(), tail.size());
+      file_done = true;
+    });
+  }
 
   while (!g_quit) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -364,7 +397,7 @@ int main(int argc, char** argv) {
 
   rx.stop();
   if (file_watch.joinable()) {
-    file->stop();
+    if (file) file->stop();
     file_watch.join();
   }
   const auto s = rx.stats();

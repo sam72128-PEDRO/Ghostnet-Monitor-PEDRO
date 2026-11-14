@@ -134,9 +134,24 @@ void RtlSdrSource::stop() {
 
 bool RtlSdrSource::retune(std::uint32_t center_hz) {
   // The rtl-sdr-blog driver switches between direct sampling (below 24 MHz)
-  // and the tuner by itself inside set_center_freq.
+  // and the tuner by itself inside set_center_freq. One retry: a USB control
+  // transfer can fail transiently while bulk transfers are streaming.
+  int r = -1;
+  std::uint32_t got = 0;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    r = rtlsdr_set_center_freq(dev_, center_hz);
+    got = rtlsdr_get_center_freq(dev_);
+    if (r == 0 && got == center_hz) break;
+  }
+  const int ds = rtlsdr_get_direct_sampling(dev_);
+  if (r != 0 || got != center_hz) {
+    retune_detail_ = "retune to " + std::to_string(center_hz) + " Hz failed (error " + std::to_string(r) +
+                     ", driver reports " + std::to_string(got) + " Hz, direct sampling " + std::to_string(ds) + ")";
+    return false;
+  }
   settings_.center_hz = center_hz;
-  return rtlsdr_set_center_freq(dev_, center_hz) == 0;
+  retune_detail_ = "centre " + std::to_string(got) + " Hz, direct sampling " + std::to_string(ds);
+  return true;
 }
 
 int RtlSdrSource::direct_sampling_mode() const { return rtlsdr_get_direct_sampling(dev_); }
