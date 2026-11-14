@@ -11,5 +11,5 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 
-rootProject.name = "ghostnet-phase0-poc"
+rootProject.name = "ghostnet-monitor"
 include(":app")

@@ -54,6 +54,9 @@ void usage() {
       "ghostnet-rx: receive-only GhostNet JS8 monitor (RTL-SDR or IQ file)\n\n"
       "  --list                 list RTL-SDR devices\n"
       "  --preset 80m|40m|20m   3.575 / 7.107 / 14.107 MHz (GhostNet V1.5)\n"
+      "  --preset test40|test20|test80\n"
+      "                         7.078 / 14.078 / 3.578 MHz JS8 calling frequencies:\n"
+      "                         busy most hours, for checking reception (not GhostNet)\n"
       "  --freq HZ              dial frequency (USB)\n"
       "  --device N             RTL-SDR index (default 0)\n"
       "  --ppm N                frequency correction\n"
@@ -139,7 +142,8 @@ int main(int argc, char** argv) {
     if (a == "--list") list = true;
     else if (a == "--preset") {
       const auto p = next();
-      cfg.dial_hz = p == "80m" ? 3575000 : p == "40m" ? 7107000 : p == "20m" ? 14107000 : 0;
+      cfg.dial_hz = p == "80m" ? 3575000 : p == "40m" ? 7107000 : p == "20m" ? 14107000
+                  : p == "test40" ? 7078000 : p == "test20" ? 14078000 : p == "test80" ? 3578000 : 0;
       if (!cfg.dial_hz) { std::fprintf(stderr, "unknown preset %s\n", p.c_str()); return 2; }
     } else if (a == "--freq") cfg.dial_hz = static_cast<std::uint32_t>(std::stoul(next()));
     else if (a == "--device") device = static_cast<std::uint32_t>(std::stoul(next()));

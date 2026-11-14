@@ -10,10 +10,36 @@ remotes, and record the exact commit pinned at that time.
 | Path | Upstream | License | Role | Notes |
 |---|---|---|---|---|
 | `third_party/js8core` | https://github.com/punk-kaos/js8core (unverified exact commit — pin when converting to submodule) | MIT | JS8 modem DSP, framing, decoder | Independent clean-room reimplementation, NOT derived from GPLv3 JS8Call desktop/Android source. README states FIR coefficients and lookup tables are generated, not copied. This is materially different from the GPLv3 "JS8Call-improved/Android-port" candidate evaluated in PHASE0_FINDINGS.md — that candidate was rejected/replaced by this MIT core at some point before this snapshot. The technical spec (section 4.1, 9.5) still assumes the GPLv3 port and needs updating to reflect this. |
-| `third_party/libusb` | https://github.com/libusb/libusb | LGPL-2.1 | USB transport under Android `UsbDeviceConnection` fd | Permissive for dynamic linking; no viral obligation on the app as long as it's linked as a shared library and LGPL notices are preserved. |
+| `third_party/libusb` | https://github.com/libusb/libusb (v1.0.30) | LGPL-2.1 | USB transport under Android `UsbDeviceConnection` fd | Currently linked **statically** into `libghostnet_native.so`. LGPL-2.1 permits that if users can relink (e.g. by providing object files or the app source). Since `rtl-sdr-blog` is GPLv2 and linked into the same library anyway, publishing the app's source under GPLv2 (WS2) satisfies both. |
 | `third_party/rtl-sdr-blog` | https://github.com/rtlsdrblog/rtl-sdr-blog | GPLv2 | RTL2832U/R820T2 tuner control, Q-branch direct sampling | This is the one real copyleft constraint in the stack. If statically linked into the app binary, GPLv2 obligations (source offer, license notice) apply to the combined work. Decide early (WS2) whether to vendor this as a separate GPL-licensed shared component with a clear boundary, or accept GPLv2 terms for the whole release. |
 | `third_party/Eigen` | https://gitlab.com/libeigen/eigen | MPL2 | Header-only linear algebra used by js8core | Header-only; kept as plain vendored snapshot even if other deps move to submodules. |
 | `third_party/CRCpp` | https://github.com/d-bahr/CRCpp | MIT | CRC implementation used by js8core | Header-only, small, fine as a plain vendored snapshot. |
+
+## Local modifications
+
+Only one vendored file set is modified. Keep this list current; it's what
+has to be re-applied when upstream is updated.
+
+| Path | Change | Why |
+|---|---|---|
+| `third_party/rtl-sdr-blog/src/librtlsdr.c`, `include/rtl-sdr.h` | Split `rtlsdr_open()` into enumeration plus a shared `rtlsdr_open_common()`. Added `rtlsdr_open_sys_dev(dev, intptr_t fd)` using `libusb_init_context(LIBUSB_OPTION_NO_DEVICE_DISCOVERY)` + `libusb_wrap_sys_device()`. Marked "GhostNet Monitor local patch" in the source. | Android apps can't enumerate USB devices; they receive an opened file descriptor from `UsbManager`. This is libusb's documented pattern for that. The existing open path is unchanged in behaviour. GPLv2 applies to the modified file. |
+
+## How they're built
+
+None of the upstream build systems are used. `rx-core/cmake/libusb.cmake`
+and `rx-core/cmake/rtlsdr.cmake` compile the needed sources directly. For
+libusb that's the core plus the Linux usbfs backend (Android and Linux
+hosts) or the Darwin backend (macOS hosts), with a generated `config.h`.
+For librtlsdr it's the library only; none of the `rtl_*` tools are built.
+js8core and Eigen are pulled in with `add_subdirectory`.
+
+The Android app links only the receive path. js8core's engine contains
+transmit code, but the app constructs it with no audio output, rig control
+or network dependency and never calls a transmit method.
+`rx-core/src/receiver.cpp` is the only place the engine is created. The
+JS8 encoder (`legacy_encode`) is called only by host-side test tools; the
+on-device self-test replays a precomputed tone table
+(`rx-core/src/self_test_tones.inc`).
 
 ## Open items
 
