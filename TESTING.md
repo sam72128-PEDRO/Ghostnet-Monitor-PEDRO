@@ -87,8 +87,8 @@ frequencies; they carry JS8 traffic most hours, so they prove reception
 without waiting for a scheduled net.
 
 Optional but useful: Settings → **Record raw IQ during sessions**, 10 min.
-If nothing decodes, that recording lets me replay exactly what your
-receiver saw.
+If nothing decodes, that recording can be replayed offline to see exactly
+what your receiver saw.
 
 Tap **START RECEIVING** and watch:
 
@@ -132,7 +132,7 @@ Give it 15 minutes before concluding anything; JS8 activity comes and goes.
 Receive → **ALE (2G)** → **ALE · scan all 10 GhostNet channels** → START
 RECEIVING. The Decoder line shows `Scanning · now x.xxxx MHz (channel n)`
 and should step through the list about once a second. Check this first:
-it's the part of ALE I could not test without the dongle. Each channel's
+it's the part of ALE that couldn't be tested without the dongle. Each channel's
 actual tuning is written to the diagnostics log the first time it's used.
 A channel that refuses to tune 3 times in a row is skipped for 5 minutes
 (the Decoder line says so) instead of stalling the scan. 28.1085 MHz is the
@@ -199,7 +199,7 @@ can be checked before any hardware test:
 ./build/ghostnet-rx --mode js8 --wav JS8_sample.wav --start-unix-ms <UTC ms of the first sample>
 ```
 
-Or upload the WAV files in the chat and I'll run them.
+
 
 ## Step 6 (optional): desktop check with `ghostnet-rx`
 

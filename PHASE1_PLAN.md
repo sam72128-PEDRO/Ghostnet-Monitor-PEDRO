@@ -193,7 +193,7 @@ patched and statically linked) plus `libusb` (LGPL-2.1, statically linked).
       remaining way to check the ALE format details before a hardware test.
 - [ ] **ALE on air (owner):** no real ALE signal has been decoded yet. The
       B-codeword check-bit inversion and the AMD/command split come from
-      LinuxALE and my reading of the standard, not from a recording.
+      LinuxALE and a reading of the standard, not from a recording.
       Retuning while streaming, including the switch out of direct sampling
       for 28.1085 MHz, is unverified on hardware.
 
