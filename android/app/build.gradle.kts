@@ -58,6 +58,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.core:core:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     testImplementation("junit:junit:4.13.2")
     // UI smoke tests: run the real activity and Compose screens on the JVM.

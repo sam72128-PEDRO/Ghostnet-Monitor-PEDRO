@@ -74,6 +74,42 @@ class DataExportTest {
     }
 
     @Test
+    fun problemReportZipHoldsEverythingInOneFile() {
+        DiagLog.init(context)
+        val db = SessionDatabase(context)
+        val s = seed(db, System.currentTimeMillis())
+        db.close()
+        // A recording made during that session.
+        val rec = Recordings.newFile(context, 7_107_000)
+        rec.writeBytes(ByteArray(4096) { 127 })
+        File(rec.path + ".meta").writeText("dial_hz=7107000\n")
+
+        fun entries(includeRecording: Boolean): Map<String, String> {
+            val f = File(context.cacheDir, "report.zip")
+            f.outputStream().use { ReportExporter.write(context, it, includeRecording) }
+            val out = mutableMapOf<String, String>()
+            java.util.zip.ZipInputStream(f.inputStream()).use { zip ->
+                while (true) {
+                    val e = zip.nextEntry ?: break
+                    out[e.name] = if (e.name.endsWith(".cu8")) "" else zip.readBytes().toString(Charsets.UTF_8)
+                }
+            }
+            return out
+        }
+
+        assertEquals(rec.name, ReportExporter.recordingForLatestSession(context)?.name)
+        val without = entries(false)
+        assertTrue(without.keys.containsAll(listOf("diagnostics.txt", "latest_session.json", "latest_session.txt", "README.txt")))
+        assertTrue(without.keys.none { it.startsWith("recording/") })
+        assertTrue(without.getValue("latest_session.txt").contains("@GHOSTNET"))
+        assertTrue(without.getValue("diagnostics.txt").contains("===== Diagnostics log ====="))
+
+        val with = entries(true)
+        assertTrue(with.containsKey("recording/${rec.name}"))
+        assertTrue(with.containsKey("recording/${rec.name}.meta"))
+    }
+
+    @Test
     fun diagnosticsReportCoversTheEssentials() {
         DiagLog.init(context)
         DiagLog.i("test", "marker line for diagnostics")
