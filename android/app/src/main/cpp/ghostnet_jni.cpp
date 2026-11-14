@@ -120,6 +120,9 @@ struct Session {
   jmethodID on_message = nullptr;
   jmethodID on_source_error = nullptr;
   jmethodID on_spectrum = nullptr;
+  jmethodID on_audio = nullptr;
+  jmethodID on_rtty_char = nullptr;
+  jmethodID on_rtty_line = nullptr;
   std::string description;
 };
 
@@ -198,7 +201,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
 extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_nativeStart(
     JNIEnv* env, jclass, jlong handle, jint dial_hz, jint sample_rate_hz, jint capture_offset_hz, jboolean usb,
     jboolean invert_spectrum, jint ppm, jboolean rtl_agc, jint direct_sampling, jint submode_mask, jstring record_path, jlong record_max_bytes,
-    jboolean verbose_log, jobject listener) {
+    jboolean verbose_log, jint mode, jdouble rtty_center_hz, jdouble rtty_shift_hz, jboolean rtty_reverse,
+    jboolean fm_squelch, jobject listener) {
   Session* s = session(handle);
   std::lock_guard<std::mutex> lock(s->mutex);
   if (!s->source) return jstr(env, "no receiver open");
@@ -212,6 +216,17 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
   cfg.invert_spectrum = invert_spectrum;
   cfg.submode_mask = submode_mask;
   cfg.verbose_engine_log = verbose_log;
+  // Mode numbering must match NativeReceiver.Mode.
+  switch (mode) {
+    case 1: cfg.mode = ReceiveMode::kRtty; break;
+    case 2: cfg.mode = ReceiveMode::kVoiceSsb; break;
+    case 3: cfg.mode = ReceiveMode::kVoiceFm; break;
+    default: cfg.mode = ReceiveMode::kJs8; break;
+  }
+  cfg.rtty.center_hz = rtty_center_hz;
+  cfg.rtty.shift_hz = rtty_shift_hz;
+  cfg.rtty.reverse = rtty_reverse;
+  cfg.fm_squelch = fm_squelch;
   if (record_path) {
     const char* p = env->GetStringUTFChars(record_path, nullptr);
     cfg.record_path = p ? p : "";
@@ -242,8 +257,12 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
       "(JJIDIIIZZZZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
   s->on_source_error = env->GetMethodID(cls, "onSourceError", "(Ljava/lang/String;)V");
   s->on_spectrum = env->GetMethodID(cls, "onSpectrum", "([FF)V");
+  s->on_audio = env->GetMethodID(cls, "onAudio", "([S)V");
+  s->on_rtty_char = env->GetMethodID(cls, "onRttyChar", "(Ljava/lang/String;Z)V");
+  s->on_rtty_line = env->GetMethodID(cls, "onRttyLine", "(JJLjava/lang/String;IID)V");
   env->DeleteLocalRef(cls);
-  if (!s->on_frame || !s->on_message || !s->on_source_error || !s->on_spectrum) {
+  if (!s->on_frame || !s->on_message || !s->on_source_error || !s->on_spectrum || !s->on_audio || !s->on_rtty_char ||
+      !s->on_rtty_line) {
     env->ExceptionClear();
     release_listener(env, s);
     return jstr(env, "listener is missing a callback method");
@@ -295,6 +314,33 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_ghostnet_monitor_NativeReceiver_na
     e->CallVoidMethod(s->listener, s->on_spectrum, arr, static_cast<jfloat>(bin_hz));
     clear_exception(e, "onSpectrum");
     e->DeleteLocalRef(arr);
+  };
+  cb.on_audio = [s](const std::int16_t* pcm, std::size_t n) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    jshortArray arr = e->NewShortArray(static_cast<jsize>(n));
+    e->SetShortArrayRegion(arr, 0, static_cast<jsize>(n), pcm);
+    e->CallVoidMethod(s->listener, s->on_audio, arr);
+    clear_exception(e, "onAudio");
+    e->DeleteLocalRef(arr);
+  };
+  cb.on_rtty_char = [s](const std::string& text, bool framing_error) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    jstring t = jstr(e, text);
+    e->CallVoidMethod(s->listener, s->on_rtty_char, t, static_cast<jboolean>(framing_error));
+    clear_exception(e, "onRttyChar");
+    e->DeleteLocalRef(t);
+  };
+  cb.on_rtty_line = [s](const RttyLine& l) {
+    JNIEnv* e = env_for_this_thread();
+    if (!e || !s->listener) return;
+    jstring t = jstr(e, l.text);
+    e->CallVoidMethod(s->listener, s->on_rtty_line, static_cast<jlong>(l.start_ms), static_cast<jlong>(l.end_ms), t,
+                      static_cast<jint>(l.characters), static_cast<jint>(l.framing_errors),
+                      static_cast<jdouble>(l.center_hz));
+    clear_exception(e, "onRttyLine");
+    e->DeleteLocalRef(t);
   };
   cb.on_source_error = [s](const std::string& message) {
     native_log("source", message);
@@ -368,7 +414,14 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_org_ghostnet_monitor_NativeReceiv
                                  st.spectrum_power_db,
                                  st.spectrum_peak_db,
                                  st.recording ? 1.0 : 0.0,
-                                 static_cast<double>(st.recorded_bytes)};
+                                 static_cast<double>(st.recorded_bytes),
+                                 st.squelch_open ? 1.0 : 0.0,
+                                 st.fm_noise,
+                                 st.rtty_locked ? 1.0 : 0.0,
+                                 st.rtty_center_hz,
+                                 st.rtty_quality,
+                                 static_cast<double>(st.rtty_characters),
+                                 static_cast<double>(st.rtty_framing_errors)};
   jdoubleArray out = env->NewDoubleArray(static_cast<jsize>(v.size()));
   env->SetDoubleArrayRegion(out, 0, static_cast<jsize>(v.size()), v.data());
   return out;

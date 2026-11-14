@@ -10,10 +10,22 @@
 #include "ghostnet/rf/ssb_demodulator.hpp"
 #include "ghostnet/rx/iq_source.hpp"
 #include "ghostnet/rx/message_assembler.hpp"
+#include "ghostnet/rx/rtty.hpp"
 
 namespace ghostnet::rx {
 
+enum class ReceiveMode {
+  kJs8,       // digital: JS8 decoder, frames + messages
+  kRtty,      // digital: 45.45 baud RTTY decoder, text lines
+  kVoiceSsb,  // analog: live SSB audio (LSB for the 7.190 MHz fallback)
+  kVoiceFm,   // analog: live narrowband FM audio (VHF/UHF)
+};
+
+inline bool is_voice(ReceiveMode m) { return m == ReceiveMode::kVoiceSsb || m == ReceiveMode::kVoiceFm; }
+
 struct ReceiverConfig {
+  ReceiveMode mode = ReceiveMode::kJs8;
+
   // Published dial frequency (USB suppressed carrier), e.g. 7107000.
   std::uint32_t dial_hz = 7107000;
 
@@ -43,7 +55,16 @@ struct ReceiverConfig {
 
   bool verbose_engine_log = false;
 
-  // Raw IQ recording: when non-empty, every IQ byte handed to the
+  // RTTY options (mode kRtty).
+  RttyConfig rtty;
+
+  // Voice (modes kVoiceSsb / kVoiceFm). Squelch applies to FM only: audio is
+  // muted while the noise metric is above the threshold.
+  bool fm_squelch = true;
+  float fm_squelch_threshold = 0.5f;
+
+  // Raw IQ recording (digital modes only; analog audio is never recorded,
+  // per the spec, so this is ignored in voice modes): when non-empty, every IQ byte handed to the
   // demodulator is also written here (dropped spans as neutral samples, so
   // replay timing stays exact), with "<path>.meta" alongside. Recording
   // stops on its own after record_max_bytes (0 = no limit).
@@ -73,6 +94,15 @@ struct ReceiverStats {
   std::int64_t last_frame_unix_ms = 0;
   bool recording = false;
   std::uint64_t recorded_bytes = 0;
+  // Voice
+  bool squelch_open = false;
+  float fm_noise = 1.0f;
+  // RTTY
+  bool rtty_locked = false;
+  double rtty_center_hz = 0.0;
+  float rtty_quality = 0.0f;
+  std::uint64_t rtty_characters = 0;
+  std::uint64_t rtty_framing_errors = 0;
 };
 
 struct ReceiverCallbacks {
@@ -80,11 +110,18 @@ struct ReceiverCallbacks {
   std::function<void(const AssembledMessage&)> on_message;    // assembled / closed messages
   std::function<void(const std::string&)> on_source_error;    // device lost, read failure
   std::function<void(const std::string&)> on_log;
+  // Voice modes: demodulated audio, int16 mono at 12 kHz, for live playback
+  // only. Never stored.
+  std::function<void(const std::int16_t* pcm, std::size_t count)> on_audio;
+  // RTTY: each decoded character as it arrives, and each completed line.
+  std::function<void(const std::string& text, bool framing_error)> on_rtty_char;
+  std::function<void(const RttyLine& line)> on_rtty_line;
   // Waterfall rows (dB, 0-3 kHz above the dial, 10 Hz bins), ~12 per second.
   std::function<void(const std::vector<float>& bins, float bin_hz)> on_spectrum;
 };
 
-// RTL-SDR IQ -> SSB demod -> AGC -> js8core decoder -> frames -> messages.
+// RTL-SDR IQ -> demodulator (SSB or FM) -> one of: js8core decoder (frames,
+// messages), RTTY decoder (text lines), or live audio (voice).
 //
 // Receive-only: the js8core engine is created with no audio output, no rig
 // control and no network channel, and this class never calls any of the

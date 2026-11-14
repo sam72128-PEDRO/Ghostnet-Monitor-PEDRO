@@ -167,13 +167,14 @@ fun ExportScreen(controller: AppController) {
         items(sessions, key = { it.id }) { s ->
             Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Column(Modifier.padding(12.dp)) {
-                    val label = Presets.JS8.firstOrNull { it.dialHz.toLong() == s.dialHz }?.label ?: "${s.dialHz} Hz"
-                    Text("JS8 · $label", fontWeight = FontWeight.SemiBold)
+                    val label = Presets.ALL.firstOrNull { it.dialHz.toLong() == s.dialHz }?.label ?: "${s.dialHz} Hz"
+                    Text("${s.protocol} · $label", fontWeight = FontWeight.SemiBold)
                     Text("${Fmt.LOCAL_DATE_TIME.format(java.time.Instant.ofEpochMilli(s.startUtcMs))} · " +
                         Fmt.UTC_DATE_TIME.format(java.time.Instant.ofEpochMilli(s.startUtcMs)) +
                         (s.endUtcMs?.let { " → ${Fmt.UTC_DATE_TIME.format(java.time.Instant.ofEpochMilli(it))}" } ?: " (active)"),
                         style = MaterialTheme.typography.bodySmall)
-                    Text("${s.state}${s.endReason?.let { " ($it)" } ?: ""} · ${s.messages} messages · ${s.frames} frames",
+                    Text("${s.state}${s.endReason?.let { " ($it)" } ?: ""} · ${s.messages} ${if (s.protocol == "RTTY") "lines" else "messages"}" +
+                        if (s.protocol == "JS8") " · ${s.frames} frames" else "",
                         style = MaterialTheme.typography.bodySmall)
                     Text(s.settings, style = MaterialTheme.typography.labelSmall)
                     s.clockNote?.let { Text(it, style = MaterialTheme.typography.labelSmall) }

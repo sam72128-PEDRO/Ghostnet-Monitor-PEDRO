@@ -29,7 +29,7 @@ object SessionExporter {
             "received, not verified. Incomplete messages are flagged, not repaired."
 
     fun suggestedFileName(s: SessionSummary, format: Format): String =
-        "GNM_${FILE_TIME.format(Instant.ofEpochMilli(s.startUtcMs))}_JS8_ALL_${s.id.take(8)}.${format.ext}"
+        "GNM_${FILE_TIME.format(Instant.ofEpochMilli(s.startUtcMs))}_${s.protocol}_ALL_${s.id.take(8)}.${format.ext}"
 
     fun export(context: Context, db: SessionDatabase, session: SessionSummary, format: Format, target: Uri) {
         val body = when (format) {
@@ -129,7 +129,8 @@ object SessionExporter {
         appendLine("Start:     ${t(s.startUtcMs)}")
         appendLine("End:       ${s.endUtcMs?.let { t(it) } ?: "(still active)"}")
         appendLine("State:     ${s.state}${s.endReason?.let { " ($it)" } ?: ""}")
-        appendLine("Dial:      ${s.dialHz} Hz USB")
+        appendLine("Protocol:  ${s.protocol}")
+        appendLine("Dial:      ${s.dialHz} Hz")
         appendLine("Receiver:  ${s.receiverId}")
         appendLine("Settings:  ${s.settings}")
         appendLine("Decoded:   ${s.frames} frames, ${s.messages} messages")

@@ -16,11 +16,11 @@ object GhostNetPlan {
 
     enum class Mode(val label: String, val receivableInThisBuild: Boolean) {
         JS8("JS8", true),
-        RTTY("RTTY 45.45 baud", false),
-        LSB_VOICE("LSB voice", false),
+        RTTY("RTTY 45.45 baud", true),
+        LSB_VOICE("LSB voice", true),
         VARA_WINLINK("Winlink P2P / VARA", false),
         ALE_2G("Ion2G 2G ALE", false),
-        FM_ANALOG("Analog FM", false),
+        FM_ANALOG("Analog FM", true),
         DMR("DMR", false),
         DMR_ENCRYPTED("Encrypted DMR", false),
     }

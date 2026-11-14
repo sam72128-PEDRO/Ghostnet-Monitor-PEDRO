@@ -78,7 +78,7 @@ fun SettingsScreen(controller: AppController) {
         SectionCard("Receiver (RTL-SDR Blog V3)") {
             StatusRow(Status.device(controller.usb))
             OutlinedButton(onClick = { controller.requestUsbPermission() }, enabled = idle) { Text("Find receiver / grant USB access") }
-            Toggle("Invert spectrum", "Flip if signals show on the waterfall but nothing decodes. Q-branch direct sampling orientation is unverified on this hardware.",
+            Toggle("Invert spectrum (HF)", "Flip if signals show on the waterfall but nothing decodes. Applies below 24 MHz, where Q-branch direct sampling orientation is unverified on this hardware.",
                 s.invertSpectrum, idle) { update(s.copy(invertSpectrum = it)) }
             Toggle("RTL AGC", "RTL2832U digital gain control. Turn off if the Signal line reports overload.",
                 s.rtlAgc, idle) { update(s.copy(rtlAgc = it)) }
@@ -91,8 +91,22 @@ fun SettingsScreen(controller: AppController) {
             Text("The V3 has a 1 ppm TCXO; 0 is normally right.", style = MaterialTheme.typography.bodySmall)
         }
 
+        SectionCard("RTTY") {
+            Toggle("Reverse (swap mark and space)", "Try this if RTTY tones are found but the text is garbage.",
+                s.rttyReverse, idle) { update(s.copy(rttyReverse = it)) }
+            Text("Shift", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (shift in listOf(170, 425, 850)) {
+                    FilterChip(selected = s.rttyShiftHz == shift, enabled = idle,
+                        onClick = { update(s.copy(rttyShiftHz = shift)) }, label = { Text("$shift Hz") })
+                }
+            }
+            Text("The booklet gives 45.45 baud but not the shift; 170 Hz is the amateur standard. The tone pair is found automatically.",
+                style = MaterialTheme.typography.bodySmall)
+        }
+
         SectionCard("IQ recording") {
-            Toggle("Record raw IQ during sessions", "Saves exactly what the receiver delivered, about 29 MB per minute, so problems can be replayed and debugged offline.",
+            Toggle("Record raw IQ during digital sessions", "JS8 and RTTY only (voice is never recorded). Saves exactly what the receiver delivered, about 29 MB per minute, so problems can be replayed and debugged offline.",
                 s.recordIq, idle) { update(s.copy(recordIq = it)) }
             Text("Stop recording after", style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -158,7 +172,8 @@ fun SettingsScreen(controller: AppController) {
         SectionCard("About") {
             Text("GhostNet Monitor ${BuildConfigInfo.VERSION}. Receive-only: no transmission, keying, replies or network access. " +
                 "Schedule and frequencies from S2 Underground, ${GhostNetPlan.SOURCE}.", style = MaterialTheme.typography.bodySmall)
-            Text("Receives now: JS8 via RTL-SDR. Coming Soon: RTTY, 2G ALE, analog voice, DigiRig input, VARA/Winlink, DMR, GhostMesh.",
+            Text("Receives via RTL-SDR: JS8, RTTY, LSB voice and VHF/UHF FM voice (none yet verified on this hardware). " +
+                "Coming Soon: 2G ALE, DigiRig input, VARA/Winlink, DMR, GhostMesh.",
                 style = MaterialTheme.typography.bodySmall)
             Text("Open-source components: js8core (MIT) · rtl-sdr-blog librtlsdr (GPL-2.0, locally patched for Android) · " +
                 "libusb (LGPL-2.1) · Eigen (MPL-2.0) · CRCpp (BSD-3-Clause) · Jetpack Compose and AndroidX (Apache-2.0). " +

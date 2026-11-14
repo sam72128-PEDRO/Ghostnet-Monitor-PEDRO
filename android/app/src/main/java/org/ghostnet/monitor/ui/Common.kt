@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import org.ghostnet.monitor.MonitorState
 import org.ghostnet.monitor.NativeReceiver
 import org.ghostnet.monitor.RtlSdrDevices
+import org.ghostnet.monitor.RxMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -135,19 +136,37 @@ object Status {
         val s = MonitorState.stats
         if (MonitorState.phase != MonitorState.Phase.RECEIVING || s == null) return StatusLine("Decoder", Health.IDLE, "—")
         val running = System.currentTimeMillis() - MonitorState.sessionStartMs
-        val (h, t) = when {
-            s.decodePasses == 0L -> Health.CHECK to "Waiting for the first 15 s decode window"
-            s.frames == 0L && running > 10 * 60_000 ->
-                Health.CHECK to "No JS8 decoded in ${running / 60_000} min (${s.decodePasses} passes). If signals show on the waterfall, try Invert spectrum."
-            s.frames == 0L -> Health.OK to "Listening · ${s.decodePasses} decode passes · nothing decoded yet"
-            else -> Health.OK to "${s.frames} frames · ${s.messages} messages · last ${Fmt.utc(s.lastFrameUnixMs)}"
+        return when (MonitorState.settings?.mode ?: RxMode.JS8) {
+            RxMode.JS8 -> {
+                val (h, t) = when {
+                    s.decodePasses == 0L -> Health.CHECK to "Waiting for the first 15 s decode window"
+                    s.frames == 0L && running > 10 * 60_000 ->
+                        Health.CHECK to "No JS8 decoded in ${running / 60_000} min (${s.decodePasses} passes). If signals show on the waterfall, try Invert spectrum."
+                    s.frames == 0L -> Health.OK to "Listening · ${s.decodePasses} decode passes · nothing decoded yet"
+                    else -> Health.OK to "${s.frames} frames · ${s.messages} messages · last ${Fmt.utc(s.lastFrameUnixMs)}"
+                }
+                StatusLine("Decoder", h, t)
+            }
+            RxMode.RTTY -> when {
+                !s.rttyLocked -> StatusLine("Decoder", if (running > 10 * 60_000) Health.CHECK else Health.OK,
+                    "Searching for an RTTY tone pair (170 Hz shift)…")
+                else -> StatusLine("Decoder", Health.OK,
+                    "Locked at %.0f Hz · quality %.2f · %d characters · %d framing errors".format(
+                        s.rttyCenterHz, s.rttyQuality, s.rttyCharacters, s.rttyFramingErrors))
+            }
+            RxMode.VOICE_FM -> StatusLine("Audio", Health.OK,
+                if (s.squelchOpen) "Squelch OPEN · signal present · playing" else "Squelch closed · no signal (noise %.2f)".format(s.fmNoise))
+            RxMode.VOICE_SSB -> StatusLine("Audio", Health.OK, "Playing LSB audio · AGC %+.0f dB".format(s.agcGainDb))
         }
-        return StatusLine("Decoder", h, t)
     }
 
     fun clock(): StatusLine {
         val s: NativeReceiver.Stats? = MonitorState.stats
         val now = "UTC ${Fmt.utc(System.currentTimeMillis())}"
+        val mode = MonitorState.settings?.mode
+        if (MonitorState.phase == MonitorState.Phase.RECEIVING && mode != null && mode != RxMode.JS8) {
+            return StatusLine("Clock", Health.IDLE, "$now · exact time not needed for ${mode.label}")
+        }
         return when {
             MonitorState.phase != MonitorState.Phase.RECEIVING || s == null || s.dtSamples < 3 ->
                 StatusLine("Clock", Health.IDLE, "$now · JS8 needs the clock within about 1 s of UTC")

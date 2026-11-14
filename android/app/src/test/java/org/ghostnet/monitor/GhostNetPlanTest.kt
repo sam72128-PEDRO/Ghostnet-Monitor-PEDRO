@@ -65,16 +65,25 @@ class GhostNetPlanTest {
     }
 
     @Test
-    fun onlyJs8IsReceivableButEveryModeStaysOnTheSchedule() {
-        assertTrue(GhostNetPlan.EVENTS.filter { it.receivableInThisBuild }.all { it.mode == GhostNetPlan.Mode.JS8 })
+    fun receivableModesMatchTheBuildAndEveryModeStaysOnTheSchedule() {
+        val receivable = GhostNetPlan.Mode.values().filter { it.receivableInThisBuild }.toSet()
+        assertEquals(setOf(GhostNetPlan.Mode.JS8, GhostNetPlan.Mode.RTTY, GhostNetPlan.Mode.LSB_VOICE, GhostNetPlan.Mode.FM_ANALOG), receivable)
         assertTrue(GhostNetPlan.EVENTS.any { it.mode == GhostNetPlan.Mode.VARA_WINLINK && !it.receivableInThisBuild })
+        assertTrue(GhostNetPlan.EVENTS.any { it.mode == GhostNetPlan.Mode.ALE_2G && !it.receivableInThisBuild })
+        // Every receivable scheduled window maps to a preset the app can tune.
+        for (e in GhostNetPlan.EVENTS.filter { it.receivableInThisBuild }) {
+            val hz = GhostNetPlan.frequency(e.frequencyId!!).hz
+            assertNotNull("no preset for ${e.id}", Presets.forDial(hz))
+        }
+        assertEquals(RxMode.RTTY, Presets.forDial(7_077_000)!!.mode)
+        assertEquals(RxMode.VOICE_SSB, Presets.forDial(7_190_000)!!.mode)
         assertNotNull(GhostNetPlan.EVENTS.first { it.id == "aus_thu_vara" }.erratum)
     }
 
     @Test
     fun ghostNetPresetsMatchCatalogJs8Frequencies() {
         val js8 = GhostNetPlan.FREQUENCIES.filter { it.mode == GhostNetPlan.Mode.JS8 }.map { it.hz.toInt() }.toSet()
-        val presets = Presets.JS8.filterNot { it.id.startsWith("test") }.map { it.dialHz }.toSet()
+        val presets = Presets.JS8.filterNot { it.isTest }.map { it.dialHz }.toSet()
         assertEquals(js8, presets)
         // Test presets must not collide with GhostNet frequencies.
         assertTrue(Presets.JS8.filter { it.id.startsWith("test") }.none { it.dialHz in js8 })
