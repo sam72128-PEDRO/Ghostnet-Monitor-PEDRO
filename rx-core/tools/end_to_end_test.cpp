@@ -42,6 +42,14 @@ constexpr double kFs = 240000.0;
 constexpr int kPeriodMs = 15000;
 
 int failures = 0;
+
+// GHOSTNET_TEST_SPEED overrides the replay speed, e.g. to run the arm64
+// build under QEMU, which emulates too slowly for the default 10x.
+double replay_speed() {
+  const char* v = std::getenv("GHOSTNET_TEST_SPEED");
+  return v ? std::atof(v) : 10.0;
+}
+
 void check(bool ok, const std::string& what) {
   std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
   if (!ok) ++failures;
@@ -118,7 +126,7 @@ void run(const Scenario& s) {
 
   // Replay at ~10x real time in USB-sized chunks.
   const std::size_t chunk = 16384;
-  const double speed = 10.0;
+  const double speed = replay_speed();
   const auto t0 = std::chrono::steady_clock::now();
   for (std::size_t off = 0; off < cap.iq.size(); off += chunk) {
     const std::size_t n = std::min(chunk, cap.iq.size() - off);
@@ -146,7 +154,7 @@ void run(const Scenario& s) {
                 msg.missing_start, msg.text.c_str());
   }
 
-  check(st.iq_bytes_dropped == 0, s.name + ": no IQ dropped at 10x real time");
+  check(st.iq_bytes_dropped == 0, s.name + ": no IQ dropped at replay speed");
   if (!s.expect_decode) {
     check(frames.empty(), s.name + ": no frames decoded (expected none)");
     return;
@@ -177,7 +185,7 @@ int main() {
 
   {
     std::printf("\n== embedded on-device self-test ==\n");
-    const auto r = run_self_test(10.0);
+    const auto r = run_self_test(replay_speed());
     std::printf("     %s | decoded '%s' in %.1f s wall for %.0f s of capture\n", r.detail.c_str(),
                 r.decoded_text.c_str(), r.wall_seconds, r.capture_seconds);
     check(r.passed, "self-test decodes '" + r.expected_text + "'");

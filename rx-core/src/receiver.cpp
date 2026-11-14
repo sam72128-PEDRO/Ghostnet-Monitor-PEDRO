@@ -40,6 +40,17 @@ double to_db(double power) { return 10.0 * std::log10(std::max(power, 1e-20)); }
 
 std::int64_t floor_div(std::int64_t a, std::int64_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 
+// The engine's ring is indexed by position within the UTC minute (12 samples
+// per ms) and decode windows start on slot boundaries, so a window position
+// gives its start's offset into the minute exactly. Returns the most recent
+// such instant whose window (of `window_ms`) could already be complete at
+// audio time `audio_now_ms`. Unambiguous for decoder lag under ~55 s.
+std::int64_t window_start_ms(int window_pos, std::int64_t window_ms, std::int64_t audio_now_ms) {
+  const std::int64_t minute_phase_ms = window_pos / 12;
+  const std::int64_t latest_start = audio_now_ms - window_ms + 2000;
+  return floor_div(latest_start - minute_phase_ms, 60000) * 60000 + minute_phase_ms;
+}
+
 }  // namespace
 
 std::uint32_t capture_center_hz(const ReceiverConfig& config) {
@@ -94,12 +105,21 @@ struct Receiver::Impl {
   std::uint64_t anchor_pairs = 0;
   Steady::time_point anchor_time;
   std::uint64_t pairs_total = 0;
+  std::uint64_t gap_carry_pairs = 0;
   std::vector<float> audio;
   std::vector<std::int16_t> pcm;
   Steady::time_point last_tick;
 
   // ---- shared ----
   std::atomic<std::int64_t> latest_audio_wall_ms{0};
+  // Start (ring index) of the decode window the following Decoded events
+  // came from; only touched on the engine's serial event-dispatch thread.
+  int window_pos = -1;
+  std::int64_t pass_decoded_through_ms = 0;
+  // End of the newest window the decoder has finished. Message timeouts run
+  // on this clock, not the audio clock, so a lagging decoder cannot make
+  // the assembler give up on a message whose next frame isn't decoded yet.
+  std::atomic<std::int64_t> decoded_through_ms{0};
   std::atomic<bool> callbacks_active{false};
   std::mutex assembler_mutex;
   MessageAssembler assembler;
@@ -132,6 +152,12 @@ struct Receiver::Impl {
     js8core::EngineDependencies deps;
     engine = js8core::make_engine(ec, std::move(ecb), deps);
     if (!engine) return false;
+
+    // Sync stats make the decoder announce each window it scans (SyncStart),
+    // which is how decodes are attributed to their exact UTC slot. The
+    // engine may drop the high-volume SyncState progress events under load,
+    // but never SyncStart or Decoded, and it delivers events in order.
+    engine->set_sync_stats(true);
 
     callbacks_active = true;
     if (!engine->start()) {
@@ -281,11 +307,23 @@ struct Receiver::Impl {
 
     audio.clear();
     demod.process_iq_u8(chunk.data.data(), pairs, &audio);
-    pcm.clear();
+    // Samples dropped before this chunk are replaced by the equivalent
+    // stretch of silence, so the decoder's ring stays aligned to UTC. The
+    // engine only realigns on jumps over 250 ms, so without this, repeated
+    // small drops would each shift slot timing and could add up to seconds.
+    std::size_t pad = 0;
+    if (chunk.gap_pairs > 0) {
+      const std::uint64_t decimation = config.sample_rate_hz / static_cast<std::uint32_t>(kAudioRate);
+      gap_carry_pairs += chunk.gap_pairs;
+      pad = static_cast<std::size_t>(gap_carry_pairs / decimation);
+      gap_carry_pairs %= decimation;
+    }
+    pcm.assign(pad, 0);
     agc.process(audio.data(), audio.size(), &pcm);
 
     if (!pcm.empty() && engine) {
-      const auto captured_at = chunk_start_time - seconds(demod.latency_seconds());
+      const auto captured_at =
+          chunk_start_time - seconds(demod.latency_seconds() + static_cast<double>(pad) / kAudioRate);
       js8core::AudioInputBuffer buffer{std::as_bytes(std::span<const std::int16_t>(pcm.data(), pcm.size())),
                                        js8core::AudioFormat{static_cast<int>(kAudioRate), 1,
                                                             js8core::SampleType::Int16},
@@ -313,7 +351,8 @@ struct Receiver::Impl {
       last_tick = now;
       {
         std::lock_guard<std::mutex> lock(assembler_mutex);
-        assembler.tick(latest_audio_wall_ms.load());
+        const std::int64_t through = decoded_through_ms.load();
+        if (through > 0) assembler.tick(through);
       }
       deliver_pending();
     }
@@ -321,9 +360,18 @@ struct Receiver::Impl {
 
   void on_engine_event(const js8core::events::Variant& ev) {
     if (!callbacks_active) return;
-    if (const auto* d = std::get_if<js8core::events::Decoded>(&ev)) {
+    if (const auto* w = std::get_if<js8core::events::SyncStart>(&ev)) {
+      window_pos = w->position;
+      const std::int64_t window_ms = w->size / 12;
+      pass_decoded_through_ms = std::max(
+          pass_decoded_through_ms, window_start_ms(w->position, window_ms, latest_audio_wall_ms.load()) + window_ms);
+    } else if (std::holds_alternative<js8core::events::DecodeStarted>(ev)) {
+      window_pos = -1;
+      pass_decoded_through_ms = 0;
+    } else if (const auto* d = std::get_if<js8core::events::Decoded>(&ev)) {
       on_decoded(*d);
     } else if (std::holds_alternative<js8core::events::DecodeFinished>(ev)) {
+      if (pass_decoded_through_ms > decoded_through_ms.load()) decoded_through_ms = pass_decoded_through_ms;
       std::lock_guard<std::mutex> lock(stats_mutex);
       ++stats.decode_passes;
     } else if (const auto* s = std::get_if<js8core::events::Spectrum>(&ev)) {
@@ -340,11 +388,17 @@ struct Receiver::Impl {
     const int submode = submode_from_event_mode(d.mode);
     if (submode < 0) return;
 
-    // The decode for a slot can only arrive after that slot's frame has been
-    // fully received, and well before the following slot's frame could be.
-    const std::int64_t period = submode_period_ms(submode);
     const std::int64_t audio_now = latest_audio_wall_ms.load();
-    const std::int64_t slot = floor_div(audio_now - submode_frame_end_ms(submode), period) * period;
+    const std::int64_t latest_start = audio_now - submode_frame_end_ms(submode);
+    std::int64_t slot = 0;
+    if (window_pos >= 0) {
+      slot = window_start_ms(window_pos, submode_frame_end_ms(submode), audio_now);
+    } else {
+      // Fallback: decodes arrive after their frame ends and before the next
+      // slot's frame could have, as long as the decoder isn't lagging.
+      const std::int64_t period = submode_period_ms(submode);
+      slot = floor_div(latest_start, period) * period;
+    }
 
     FrameEvent fe;
     fe.utc_ms = slot;

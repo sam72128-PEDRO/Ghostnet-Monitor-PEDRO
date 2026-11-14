@@ -1,31 +1,53 @@
 # GhostNet Monitor
 
 Receive-only Android monitor for the [GhostNet](https://github.com/s2underground/GhostNet)
-HF digital network: USB SDR / radio input in, decoded traffic and schedule
-out, no transmit path anywhere in the design.
+HF digital network: RTL-SDR in, decoded JS8 traffic out. There is no
+transmit path anywhere in the design.
 
-## Where things are
+**Current state:** Milestone 1 (RTL-SDR → JS8 on the tablet) is
+code-complete and passes all software tests. It has not yet run on real
+hardware; [TESTING.md](TESTING.md) is the procedure.
+
+## Documents
 
 | Document | What it is |
 |---|---|
-| [`GhostNet_Monitor_Android_Technical_Spec_V1.0.md`](GhostNet_Monitor_Android_Technical_Spec_V1.0.md) | The full V1 product target: modes, frequencies, schedule, UI, data model, acceptance tests. |
-| [`PHASE1_PLAN.md`](PHASE1_PLAN.md) | **Start here for current work.** Re-sequences the spec's phases around a single narrow milestone (RTL-SDR → JS8, real hardware, one real decode) before any other input/mode is started, and tracks what's actually done. |
-| [`PHASE0_FINDINGS.md`](PHASE0_FINDINGS.md) | What the original feasibility pass actually proved vs. assumed, before this plan existed. |
-| [`THIRD_PARTY.md`](THIRD_PARTY.md) | License and provenance of everything under `third_party/`, including a correction to the spec's assumption about the JS8 decoder's license. |
+| [`TESTING.md`](TESTING.md) | **Start here to test with hardware.** Step-by-step, each step isolating one layer. |
+| [`PHASE1_PLAN.md`](PHASE1_PLAN.md) | What's built, what's verified, and what's still open. |
+| [`GhostNet_Monitor_Android_Technical_Spec_V1.0.md`](GhostNet_Monitor_Android_Technical_Spec_V1.0.md) | Full V1 product target. |
+| [`PHASE0_FINDINGS.md`](PHASE0_FINDINGS.md) | The original feasibility pass. |
+| [`THIRD_PARTY.md`](THIRD_PARTY.md) | Licences, provenance, the one local patch, and how dependencies are built. |
 
 ## Layout
 
-- `rf-frontend/` — first-party DSP (RTL-SDR-style real-sample-stream → demodulated audio). Portable C++20, host-buildable, host-tested against synthetic fixtures. No Android/USB dependency (yet).
-- `phase0-poc/` — the Android harness: USB enumeration, JNI bridge into the JS8 decoder, foreground service, SQLite schema. Minimal by design; see `PHASE1_PLAN.md` for what it still needs.
-- `third_party/` — vendored dependencies (`js8core`, `libusb`, `rtl-sdr-blog`, `Eigen`, `CRCpp`). See `THIRD_PARTY.md` before adding to or relying on any of these.
+| Path | Contents |
+|---|---|
+| `android/` | The app: foreground service, session database, UI, JNI bridge |
+| `rx-core/` | Native receive core: RTL-SDR source, pipeline, JS8 frame unpacking and message assembly, `ghostnet-rx` desktop tool, tests |
+| `rf-frontend/` | DSP: IQ → SSB audio for the decoder, with tests |
+| `third_party/` | js8core (MIT), rtl-sdr-blog (GPLv2, patched), libusb (LGPL-2.1), Eigen, CRCpp |
 
-## Building what can be built without an Android SDK
+## Signal path
 
-```bash
-cd rf-frontend
-cmake -S . -B build && cmake --build build -j
-ctest --test-dir build --output-on-failure
+```
+RTL-SDR V3 (Q-branch direct sampling, 240 kS/s u8 IQ, tuned dial + 25 kHz)
+  -> libusb (Android: wrapped UsbManager fd) -> librtlsdr async read
+  -> bounded queue (drops and counts on overload)
+  -> rf-frontend: mix -> /5 -> /4 -> USB phasing demod -> slow AGC -> 12 kHz PCM
+  -> js8core engine (receive only) -> frames
+  -> rx-core: frame unpack -> multi-frame message assembly
+  -> app: SQLite session log + live display
 ```
 
-The Android app (`phase0-poc/`) needs an Android SDK/NDK and a connected
-device to do anything beyond compile; see `phase0-poc/README.md`.
+## Build and test without hardware
+
+```bash
+cmake -S rx-core -B rx-core/build -DCMAKE_BUILD_TYPE=Release
+cmake --build rx-core/build -j
+ctest --test-dir rx-core/build --output-on-failure   # ~1 min
+
+cmake -S rf-frontend -B rf-frontend/build && cmake --build rf-frontend/build -j
+ctest --test-dir rf-frontend/build --output-on-failure
+```
+
+The Android build is described in [`android/README.md`](android/README.md).
